@@ -102,4 +102,4 @@ ScrollGuard/
 
 ## License
 
-MIT.
+All rights reserved. This project is published as a portfolio piece for reference. You may not copy, modify, or redistribute the code without permission.
