@@ -1,0 +1,246 @@
+* { box-sizing: border-box; }
+
+:root {
+  --bg: #0f1115;
+  --panel: #181b22;
+  --panel-2: #20242c;
+  --border: #2a2f39;
+  --text: #e5e7eb;
+  --muted: #9ca3af;
+  --muted-2: #6b7280;
+  --accent: #60a5fa;
+  --accent-hover: #93c5fd;
+  --good: #34d399;
+  --danger: #f87171;
+  --warn: #fbbf24;
+}
+
+html, body {
+  margin: 0; padding: 0;
+  width: 340px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+header {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 14px 16px 10px;
+}
+.brand {
+  font-weight: 600; font-size: 15px;
+  letter-spacing: 0.01em;
+}
+.date {
+  color: var(--muted); font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+section {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+h2 {
+  margin: 0 0 10px;
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--muted);
+  display: flex; justify-content: space-between; align-items: center;
+}
+
+/* --- Today / groups --- */
+
+.group-row {
+  display: grid;
+  grid-template-columns: 60px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+}
+.group-row .name { color: var(--text); font-size: 13px; }
+.group-row .value {
+  font: 600 12px/1 ui-monospace, "SF Mono", monospace;
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.group-row.good     .value { color: var(--accent); }
+.group-row.warn     .value { color: var(--warn); }
+.group-row.danger   .value { color: var(--danger); }
+.group-row.blocked  .value { color: var(--danger); }
+.group-row.unlocked .value { color: var(--warn); }
+
+.bar {
+  position: relative;
+  height: 6px; border-radius: 3px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.bar > .fill {
+  position: absolute; inset: 0 auto 0 0;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.4s ease, background 0.3s ease;
+}
+.bar > .fill.good     { background: var(--accent); }
+.bar > .fill.warn     { background: var(--warn); }
+.bar > .fill.danger   { background: var(--danger); }
+.bar > .fill.blocked  { background: var(--danger); }
+.bar > .fill.unlocked { background: var(--warn); }
+
+.meta {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--muted);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.meta > div { display: flex; gap: 6px; flex-wrap: wrap; }
+.meta .dot { color: var(--muted-2); }
+.meta .breakdown { color: var(--muted-2); }
+.meta .currently {
+  flex-basis: 100%;
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: var(--panel);
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.meta .currently .dim { color: var(--muted); }
+
+/* --- Settings --- */
+
+#settingsBody { margin-top: 4px; }
+
+/* Slider rows: label + current value on top, slider track full-width below.
+   Two-row grid keeps the label readable while the slider gets full width. */
+.row {
+  display: grid;
+  grid-template-areas:
+    "label value"
+    "slider slider";
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  padding: 8px 0;
+  align-items: baseline;
+}
+.row > label { grid-area: label; color: var(--text); font-size: 12px; }
+.row > label .muted { color: var(--muted); font-weight: 400; font-size: 11px; }
+.row > .val {
+  grid-area: value;
+  color: var(--accent);
+  font: 600 12px/1 ui-monospace, "SF Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+.row > input[type=range] { grid-area: slider; width: 100%; margin: 4px 0 0; }
+
+/* Stacked label + input for the password fields */
+.field-stack {
+  display: flex; flex-direction: column;
+  gap: 4px;
+  padding: 6px 0;
+}
+.field-stack label { color: var(--text); font-size: 12px; }
+.field-stack input { width: 100%; }
+
+input[type=password], input[type=text] {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+input:focus { outline: none; border-color: var(--accent); }
+
+/* --- Range slider styling (Webkit/Blink — Chrome only) --- */
+input[type=range] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  height: 18px;
+  cursor: pointer;
+  padding: 0;
+  border: none;
+}
+input[type=range]::-webkit-slider-runnable-track {
+  height: 4px;
+  background: var(--panel-2);
+  border-radius: 2px;
+  border: none;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-top: -5px;       /* pulls thumb up so it centers on the 4px track */
+  border: 2px solid var(--bg);
+  box-shadow: 0 0 0 1px var(--border);
+  cursor: pointer;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+input[type=range]::-webkit-slider-thumb:hover { background: var(--accent-hover); }
+input[type=range]:focus { outline: none; }
+input[type=range]:focus::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.25);
+}
+
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 12px 0;
+}
+
+.actions {
+  margin-top: 12px;
+  display: flex; align-items: center; gap: 12px;
+}
+
+button {
+  cursor: pointer;
+  font: inherit;
+  border-radius: 4px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+button.primary {
+  background: var(--accent);
+  color: #0b1220;
+  border: none;
+  padding: 6px 14px;
+  font-weight: 600;
+}
+button.primary:hover { background: var(--accent-hover); }
+
+button.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  font-size: 12px;
+}
+button.ghost:hover { border-color: var(--muted); }
+button.ghost.danger { color: var(--danger); }
+button.ghost.danger:hover { border-color: var(--danger); background: rgba(248, 113, 113, 0.05); }
+
+button.link {
+  background: none; border: none;
+  color: var(--accent);
+  font: inherit; padding: 0;
+  text-transform: lowercase; letter-spacing: 0;
+}
+button.link:hover { text-decoration: underline; }
+
+.msg { font-size: 12px; }
+.msg.ok { color: var(--good); }
+.msg.err { color: var(--danger); }
+
+.footer-actions {
+  display: flex; gap: 8px;
+  padding: 12px 16px 14px;
+}
+.footer-actions button { flex: 1; }
