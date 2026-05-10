@@ -1,6 +1,14 @@
-# ScrollGuard
+<p align="center">
+  <img src="icons/icon-192.png" alt="ScrollGuard logo" width="160">
+</p>
 
-A Chrome extension that tracks Instagram usage by context (reels, stories, feed, DMs, explore, profile) and blocks you when you've spent too long in any of them. Built as a personal behavioral-intervention tool — not a polished product.
+<h1 align="center">ScrollGuard</h1>
+
+<p align="center">
+  A Chrome extension that tracks Instagram usage by context (reels, stories, feed, DMs, explore, profile) and blocks you when you've spent too long in any of them. Built as a personal behavioral-intervention tool — not a polished product.
+</p>
+
+---
 
 When you hit a limit, ScrollGuard takes over the page with a full-screen block overlay, pauses any playing video, and refuses to let you scroll until either the cooldown expires or you type your password for a short grace window.
 
