@@ -24,7 +24,7 @@ Whenever you hit a time limit (that you set) on reels or just by scrolling throu
 
 ## Install
 
-Download the latest release: [Releases page](https://github.com/yourname/ScrollGuard/releases/latest)
+Download the latest release: [Releases page](https://github.com/RayyanHai/ScrollGuard/releases/latest)
 
 1. Download `scrollguard-vX.Y.Z.zip`
 2. Unzip it somewhere stable (not your Downloads folder)
