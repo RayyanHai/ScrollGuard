@@ -12,6 +12,15 @@
 
 Whenever you hit a time limit (that you set) on reels or just by scrolling through your IG feed on the website, the extension will take over the page with a full-screen block overlay and pause anything in the background until the cooldown (that you set) expires or you enter a password for a short grace period. 
 
+## Screenshots
+<p align="center">
+  <img width="340" height="598" alt="Screenshot 2026-05-11 at 7 54 08 PM" src="https://github.com/user-attachments/assets/ae8a3dcd-ff83-4add-8514-f2b750c5f505" />
+</p>
+
+<p align="center">
+  <img width="1464" height="799" alt="Screenshot 2026-05-11 at 7 55 03 PM" src="https://github.com/user-attachments/assets/1404b497-83a8-4beb-bd17-d5613de72b83" />
+</p>
+
 ## Features
 
 - **Per-context tracking.** Reels, stories, IG feed, profile, and DM's are all tracked separately. DM's do not count towards the limit.
