@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Package extension
+        run: |
+          zip -r scrollguard-${{ steps.version.outputs.version }}.zip \
+            manifest.json \
+            background/ \
+            content/ \
+            dashboard/ \
+            icons/ \
+            lib/ \
+            options/ \
+            popup/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: scrollguard-${{ steps.version.outputs.version }}.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
