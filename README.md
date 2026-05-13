@@ -28,15 +28,15 @@ Even when I block doomscrolling apps on my phone, I sometimes still scroll on my
 
 ## What I learned
 
-- **Manifest V3's service worker lifecycle.** Wrote my first extension on V3 and immediately hit the "service worker died, where did my state go" wall. The fix — making state a value in storage rather than a process in memory — generalized well. Same pattern shows up in REST APIs and JWT auth: stateless services that derive state from persisted data are more resilient than stateful processes.
+- **GitHub Actions for release automation.** Wrote my first CI workflow that triggered on 'v*' tags and packages the extension and publishes a GitHub release. Small in scope, but the patterns generalize to every CI/CD platform.
+  
+- **Using Chrome Storage to survive outsmarting the blocker.** Manifest V3 service workers die after ~30 seconds of inactivity, which breaks any extension built around long-running timers. I used a single timestamp in chrome.storage.local so anytime IG is opened and it's in the block state, it just compares to the current clock. This means the block persists when IG is idle, when the browser restarts, when the entire computer restarts, and in pretty much anything. Storage outlives processes, and this is the same idea behind REST APIs, JWTs, and other distributed systems work.
 
-- **CSS isolation is harder than it looks on production sites.** First version of the overlay used regular DOM nodes with prefixed classnames. Instagram's CSS still leaked through (their stylesheet has very specific selectors). Rebuilt in Shadow DOM and the problem disappeared. Now I reach for Shadow DOM by default any time I'm injecting UI into a site I don't control.
+- **Coordinating tricky parts of the design** I initially planned to track time across all tabs, but was confused on how to figure out which one was the real session. After some edge cases, I decided to switch and calculate time based on independent tabs and sum them up in the dashboard at read time. This design choice saved a lot of maintenance later on.
 
-- **Message passing between SW and content scripts.** `chrome.runtime.sendMessage` is async and surprisingly easy to deadlock if you await responses incorrectly. Learned to keep the SW the source of truth and treat the content script as a thin renderer that fires events and updates the DOM.
+- **Tracking Active Time.** I needed three separate signals to track the active amount of time spent on reels: chrome.tabs.onActivated (is it active in the window?), chrome.windows..onFocusChanged (is the window focused?), and the Page Visibility API (is the page visible as in it's not behind another window?). While I had these concerns during design, it was interesting to see how they were technically built into APIs and composed in code.
 
-- **The cost of cross-tab state.** I started with a global session model and tried to reconcile multiple tabs. After two days of edge-case whack-a-mole, I scrapped it and made sessions per-tab. The redesign was a few hours; the original approach would have been a maintenance burden forever. Worth doing the math on coordination cost early.
-
-- **Self-imposed friction is a real design space.** The password isn't security. It's a few seconds of typing meant to interrupt the autopilot reach for the bypass button. Designing for "interrupt the impulse without being unusable" is a different problem than designing for "stop a hostile user," and the constraints flip in interesting ways.
+- **CSS isolation on a site I don't control** When I first tried making the overlay using regular DOM nodes, IG's CSS still leaked through. I then rebuilt a shadow DOM, which was like an isolated bubble of HTML and CSS that the page couldn't reach into.
 
 ## Tech Stack
 - **JavaScript**
@@ -52,7 +52,7 @@ Even when I block doomscrolling apps on my phone, I sometimes still scroll on my
 - **Password** A correct password buys you a fixed unlock window (default 30 sec), then the block resumes for the rest of its cooldown.
 - **Session classification.** Each Instagram session is classified at end as `quick_check` (<60s), `browsing` (1–5 min), or `deep_scroll` (>5 min) for retrospective awareness. Each session of usage is classified as either a *quick check* (<60s), *browsing* (1-5min) or a *deep scroll* (>5 minutes).
 - **Popup dashboard.**  Extension dashboard displays daily active time with threshold-based coloring, session count, session classification, current block countdowns, and time limit settings. 
-- **Edge Cases** Any restarts, browser shutdown, or device shutdowns fail to break the blocker. All state lives in `chrome.storage.local`.
+- **Edge Cases** Any restarts, browser shutdowns, or device shutdowns fail to break the blocker. All state lives in `chrome.storage.local`.
 
 ## Install
 
@@ -65,16 +65,6 @@ Download the latest release: [Releases page](https://github.com/RayyanHai/Scroll
 5. Click "Load unpacked" and select the unzipped folder
 
 ## Configuration
-
-Edit settings to your liking.
-| Setting | What it does |
-|---|---|
-| Scroll limit | Combined cap for feed + stories before blocking |
-| Reels limit | Cap for reels alone |
-| Other limit | Cap for explore + profile + uncategorised pages |
-| Block cooldown | How long the block stays active after a limit hit |
-| Unlock grace | How long the password unlocks you for |
-| Password | The phrase you type to bypass an active block |
 
 - Scroll Limit: Time limit for feed + stories
 - Reels Limit: Time limit for just reels
@@ -97,9 +87,19 @@ nav events  →  per-tab session/segment tracking
    content script BLOCK / UNLOCK / CLEAR
 ```
 
-- **Service worker** (`background/service-worker.js`) is the brain. Listens to `webNavigation`, `tabs`, and `windows` events; runs a 1-second `setInterval` that decides what state each tab should be in.
-- **Content script** (`content/detector.js`, `content/intervention.js`) runs in the Instagram page. Reports Page Visibility, renders the block overlay in a Shadow DOM, pauses videos when blocked.
+- **Service worker** (`background/service-worker.js) is the brain. Listens to `webNavigation`, `tabs`, and `windows` events; runs a 1-second `setInterval` that decides what state each tab should be in.
+- **Content script** (`content/detector.js`, `content/intervention.js`) runs in the Instagram page. Reports Page Visibility, renders the block overlay in a Shadow DOM, and pauses videos when blocked.
 - **Storage** (`chrome.storage.local`, wrapped in `lib/storage.js`) holds in-flight sessions, completed sessions bucketed by date, the per-group active-time counter, the current block state, and user-edited config.
+
+## Roadmap
+
+Some things I have planned for the future of the project given more time:
+
+- **More Platforms** Extend usage across different platforms like TikTok and YouTube shorts that both use similar styles of scrolling and feeds.
+
+- **Continuous Integration** Add unit tests for the rules engine and run them on every PR
+
+- **Dashboard data export.** Export the session log as JSON or CSV for any personal purposes.
 
 ## License
 
