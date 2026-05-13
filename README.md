@@ -32,11 +32,11 @@ Even when I block doomscrolling apps on my phone, I sometimes still scroll on my
   
 - **Using Chrome Storage to survive outsmarting the blocker.** Manifest V3 service workers die after ~30 seconds of inactivity, which breaks any extension built around long-running timers. I used a single timestamp in chrome.storage.local so anytime IG is opened and it's in the block state, it just compares to the current clock. This means the block persists when IG is idle, when the browser restarts, when the entire computer restarts, and in pretty much anything. Storage outlives processes, and this is the same idea behind REST APIs, JWTs, and other distributed systems work.
 
-- **Coordinating tricky parts of the design** I initially planned to track time across all tabs, but was confused on how to figure out which one was the real session. After some edge cases, I decided to switch and calculate time based on independent tabs and sum them up in the dashboard at read time. This design choice saved a lot of maintenance later on.
+- **Coordinating tricky parts of the design.** I initially planned to track time across all tabs, but was confused on how to figure out which one was the real session. After some edge cases, I decided to switch and calculate time based on independent tabs and sum them up in the dashboard at read time. This design choice saved a lot of maintenance later on.
 
 - **Tracking Active Time.** I needed three separate signals to track the active amount of time spent on reels: chrome.tabs.onActivated (is it active in the window?), chrome.windows..onFocusChanged (is the window focused?), and the Page Visibility API (is the page visible as in it's not behind another window?). While I had these concerns during design, it was interesting to see how they were technically built into APIs and composed in code.
 
-- **CSS isolation on a site I don't control** When I first tried making the overlay using regular DOM nodes, IG's CSS still leaked through. I then rebuilt a shadow DOM, which was like an isolated bubble of HTML and CSS that the page couldn't reach into.
+- **CSS isolation on a site I don't control.** When I first tried making the overlay using regular DOM nodes, IG's CSS still leaked through. I then rebuilt a shadow DOM, which was like an isolated bubble of HTML and CSS that the page couldn't reach into.
 
 ## Tech Stack
 - **JavaScript**
@@ -95,9 +95,9 @@ nav events  →  per-tab session/segment tracking
 
 Some things I have planned for the future of the project given more time:
 
-- **More Platforms** Extend usage across different platforms like TikTok and YouTube shorts that both use similar styles of scrolling and feeds.
+- **More Platform.s** Extend usage across different platforms like TikTok and YouTube shorts that both use similar styles of scrolling and feeds.
 
-- **Continuous Integration** Add unit tests for the rules engine and run them on every PR
+- **Continuous Integration.** Add unit tests for the rules engine and run them on every PR
 
 - **Dashboard data export.** Export the session log as JSON or CSV for any personal purposes.
 
