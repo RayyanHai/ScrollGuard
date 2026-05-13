@@ -95,7 +95,7 @@ nav events  →  per-tab session/segment tracking
 
 Some things I have planned for the future of the project given more time:
 
-- **More Platform.s** Extend usage across different platforms like TikTok and YouTube shorts that both use similar styles of scrolling and feeds.
+- **More Platforms.** Extend usage across different platforms like TikTok and YouTube shorts that both use similar styles of scrolling and feeds.
 
 - **Continuous Integration.** Add unit tests for the rules engine and run them on every PR
 
