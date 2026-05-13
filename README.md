@@ -21,6 +21,29 @@ Whenever you hit a time limit (that you set) on reels or just by scrolling throu
   <img width="1464" height="799" alt="Screenshot 2026-05-11 at 7 55 03 PM" src="https://github.com/user-attachments/assets/1404b497-83a8-4beb-bd17-d5613de72b83" />
 </p>
 
+
+## Why I built this
+
+Even when I block doomscrolling apps on my phone, I sometimes still scroll on my computer. I wanted to make my own app to address my specific needs and enhance my learning of CI/CD and JavaScript. 
+
+## What I learned
+
+- **Manifest V3's service worker lifecycle.** Wrote my first extension on V3 and immediately hit the "service worker died, where did my state go" wall. The fix — making state a value in storage rather than a process in memory — generalized well. Same pattern shows up in REST APIs and JWT auth: stateless services that derive state from persisted data are more resilient than stateful processes.
+
+- **CSS isolation is harder than it looks on production sites.** First version of the overlay used regular DOM nodes with prefixed classnames. Instagram's CSS still leaked through (their stylesheet has very specific selectors). Rebuilt in Shadow DOM and the problem disappeared. Now I reach for Shadow DOM by default any time I'm injecting UI into a site I don't control.
+
+- **Message passing between SW and content scripts.** `chrome.runtime.sendMessage` is async and surprisingly easy to deadlock if you await responses incorrectly. Learned to keep the SW the source of truth and treat the content script as a thin renderer that fires events and updates the DOM.
+
+- **The cost of cross-tab state.** I started with a global session model and tried to reconcile multiple tabs. After two days of edge-case whack-a-mole, I scrapped it and made sessions per-tab. The redesign was a few hours; the original approach would have been a maintenance burden forever. Worth doing the math on coordination cost early.
+
+- **Self-imposed friction is a real design space.** The password isn't security. It's a few seconds of typing meant to interrupt the autopilot reach for the bypass button. Designing for "interrupt the impulse without being unusable" is a different problem than designing for "stop a hostile user," and the constraints flip in interesting ways.
+
+## Tech Stack
+- **JavaScript**
+- **GitHub Actions** Automated release packaging
+- **Chrome Extension Manifest V3** Service Worker + Content Scripts
+- **Shadow DOM** For the overlay
+
 ## Features
 
 - **Per-context tracking.** Reels, stories, IG feed, profile, and DM's are all tracked separately. DM's do not count towards the limit.
