@@ -8,6 +8,12 @@
   A Chrome extension that tracks Instagram usage by context (reels, stories, feed, DMs, explore, profile) and blocks you when you've spent too long in any of them. Built as a personal behavioral-intervention tool — not a polished product.
 </p>
 
+<p align="center">
+  <a href="https://github.com/rayyanhai/ScrollGuard/releases/latest">
+    <img src="https://img.shields.io/github/v/release/rayyanhai/ScrollGuard?style=flat-square&label=latest" alt="Latest release">
+  </a>
+</p>
+
 ---
 
 Whenever you hit a time limit (that you set) on reels or just by scrolling through your IG feed on the website, the extension will take over the page with a full-screen block overlay and pause anything in the background until the cooldown (that you set) expires or you enter a password for a short grace period. 
@@ -63,6 +69,10 @@ Download the latest release: [Releases page](https://github.com/RayyanHai/Scroll
 3. Open `chrome://extensions`
 4. Enable Developer mode (top-right)
 5. Click "Load unpacked" and select the unzipped folder
+
+**First run:** click the ScrollGuard icon and you'll be prompted to set your unlock password. Choose something memorable but annoying — that's the friction layer between you and bypassing a block. You can change it later from the settings panel.
+
+> Working on the code? Skip the download and `git clone` the repo instead, then load that folder directly.
 
 ## Configuration
 

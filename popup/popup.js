@@ -321,7 +321,53 @@ async function refresh() {
 // Init
 // ---------------------------------------------------------------------------
 
-async function init() {
+// First-time setup view. Shown when userConfig.password isn't set. Required
+// before the dashboard is reachable — keeps users from accidentally relying on
+// a default password they didn't pick.
+async function showSetupView() {
+  document.getElementById('setupView').hidden = false;
+  document.getElementById('mainView').hidden = true;
+
+  const pw = document.getElementById('setupPw');
+  const confirm = document.getElementById('setupPwConfirm');
+  const msg = document.getElementById('setupMsg');
+  const save = document.getElementById('setupSave');
+
+  setTimeout(() => pw.focus(), 50);
+
+  // Enter in either field submits.
+  for (const el of [pw, confirm]) {
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') save.click(); });
+  }
+
+  save.addEventListener('click', async () => {
+    msg.textContent = '';
+    msg.className = 'msg';
+    const a = pw.value;
+    const b = confirm.value;
+    if (!a || a.length < 4) {
+      msg.textContent = 'Password must be at least 4 characters.';
+      msg.className = 'msg err';
+      return;
+    }
+    if (a !== b) {
+      msg.textContent = 'Passwords don\'t match.';
+      msg.className = 'msg err';
+      return;
+    }
+    const current = await chrome.storage.local.get('userConfig');
+    const userConfig = current.userConfig || {};
+    userConfig.password = a;
+    await chrome.storage.local.set({ userConfig });
+    // Transition to main view. We re-run init logic from scratch since the
+    // main view hasn't been populated yet.
+    document.getElementById('setupView').hidden = true;
+    document.getElementById('mainView').hidden = false;
+    await initMain();
+  });
+}
+
+async function initMain() {
   document.getElementById('date').textContent =
     new Date().toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 
@@ -349,6 +395,17 @@ async function init() {
   // Refresh every second so countdowns and currently-in indicator stay live
   // while the popup is open.
   setInterval(refresh, 1000);
+}
+
+// Entry point: decide which view to show based on whether a password is set.
+async function init() {
+  const { userConfig = {} } = await chrome.storage.local.get('userConfig');
+  if (!userConfig.password) {
+    await showSetupView();
+  } else {
+    document.getElementById('mainView').hidden = false;
+    await initMain();
+  }
 }
 
 init();

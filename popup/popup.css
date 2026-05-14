@@ -244,3 +244,24 @@ button.link:hover { text-decoration: underline; }
   padding: 12px 16px 14px;
 }
 .footer-actions button { flex: 1; }
+
+/* --- First-time setup view --- */
+
+section.setup {
+  padding: 16px 16px 20px;
+  border-top: 1px solid var(--border);
+}
+.setup-title {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.setup-sub {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.setup .field-stack { padding: 8px 0; }
+.setup .actions { margin-top: 16px; }

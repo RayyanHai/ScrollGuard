@@ -70,7 +70,7 @@ function ensureOverlay() {
   return el;
 }
 
-function renderBlocked({ group, blockedUntil, password_required }) {
+function renderBlocked({ group, blockedUntil, passwordSet }) {
   const el = ensureOverlay();
   const root = el.shadowRoot;
   root.innerHTML = `
@@ -116,6 +116,17 @@ function renderBlocked({ group, blockedUntil, password_required }) {
         background: #4c1d1d; color: #fecaca; font-size: 12px; letter-spacing: 0.04em;
         text-transform: uppercase; margin-bottom: 12px;
       }
+      .setup-note {
+        margin-top: 32px;
+        padding: 14px 16px;
+        background: #1a1010;
+        border: 1px solid #4c1d1d;
+        border-radius: 6px;
+        color: #fecaca;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .setup-note strong { color: #fff; }
     </style>
     <div class="wrap">
       <div class="card">
@@ -123,18 +134,25 @@ function renderBlocked({ group, blockedUntil, password_required }) {
         <h1>Blocked</h1>
         <p class="sub">You hit your ${group} limit.</p>
         <div class="countdown" id="cd">--:--</div>
+        ${passwordSet ? `
         <div class="pwline">
           <div class="pwlabel">Type password to unlock briefly</div>
           <input id="pw" class="pw" type="text" name="sg-passphrase-${Math.random().toString(36).slice(2)}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" />
           <div class="err" id="err"></div>
         </div>
+        ` : `
+        <div class="setup-note">
+          <strong>No unlock password set.</strong><br>
+          Open the ScrollGuard extension popup (toolbar icon) to set one. Until then, the block can only be waited out.
+        </div>
+        `}
       </div>
     </div>
   `;
 
   const cdEl = root.getElementById('cd');
-  const pw = root.getElementById('pw');
-  const err = root.getElementById('err');
+  const pw = passwordSet ? root.getElementById('pw') : null;
+  const err = passwordSet ? root.getElementById('err') : null;
 
   function tickCountdown() {
     const remaining = Math.max(0, blockedUntil - Date.now());
@@ -158,32 +176,36 @@ function renderBlocked({ group, blockedUntil, password_required }) {
   tickCountdown();
   countdownInterval = setInterval(tickCountdown, 1000);
 
-  // Defeat Chrome's password autofill: it runs after the field is in the DOM,
-  // so we wipe and refocus on a few delayed ticks. Two RAFs catches Chrome's
-  // own autofill; the 100ms timeout catches slower password managers (LastPass, 1Password).
-  pw.value = '';
-  requestAnimationFrame(() => {
+  // Password input only exists when a password is configured. In setup mode
+  // (first install) we skip all of this and the user gets the setup note instead.
+  if (passwordSet && pw) {
+    // Defeat Chrome's password autofill: it runs after the field is in the DOM,
+    // so we wipe and refocus on a few delayed ticks. Two RAFs catches Chrome's
+    // own autofill; the 100ms timeout catches slower password managers (LastPass, 1Password).
     pw.value = '';
-    requestAnimationFrame(() => { pw.value = ''; pw.focus(); });
-  });
-  setTimeout(() => { pw.value = ''; pw.focus(); }, 100);
+    requestAnimationFrame(() => {
+      pw.value = '';
+      requestAnimationFrame(() => { pw.value = ''; pw.focus(); });
+    });
+    setTimeout(() => { pw.value = ''; pw.focus(); }, 100);
 
-  pw.addEventListener('keydown', async (e) => {
-    if (e.key !== 'Enter') return;
-    const value = pw.value;
-    pw.value = '';
-    err.textContent = '';
-    try {
-      const resp = await chrome.runtime.sendMessage({ type: 'TRY_UNLOCK', password: value });
-      if (!resp?.ok) {
-        err.textContent = 'Wrong password.';
-        pw.focus();
+    pw.addEventListener('keydown', async (e) => {
+      if (e.key !== 'Enter') return;
+      const value = pw.value;
+      pw.value = '';
+      err.textContent = '';
+      try {
+        const resp = await chrome.runtime.sendMessage({ type: 'TRY_UNLOCK', password: value });
+        if (!resp?.ok) {
+          err.textContent = 'Wrong password.';
+          pw.focus();
+        }
+        // If ok, SW will send UNBLOCK and we'll tear down the overlay.
+      } catch {
+        err.textContent = 'SW unreachable. Reload tab.';
       }
-      // If ok, SW will send UNBLOCK and we'll tear down the overlay.
-    } catch {
-      err.textContent = 'SW unreachable. Reload tab.';
-    }
-  });
+    });
+  }
 
   pauseAllVideos();
   installVideoBlocker();

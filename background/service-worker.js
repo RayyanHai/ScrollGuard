@@ -228,8 +228,11 @@ function evaluateOverlayFor(ctx, now) {
 }
 
 function sendOverlay(tabId, evalResult) {
+  // Tell the content script whether a password is configured. When false,
+  // the overlay swaps the unlock input for a "set up in the popup" message.
+  const passwordSet = !!cfg().password;
   if (evalResult.mode === 'blocked') {
-    chrome.tabs.sendMessage(tabId, { type: 'BLOCK', group: evalResult.group, blockedUntil: evalResult.blockedUntil }).catch(() => {});
+    chrome.tabs.sendMessage(tabId, { type: 'BLOCK', group: evalResult.group, blockedUntil: evalResult.blockedUntil, passwordSet }).catch(() => {});
   } else if (evalResult.mode === 'unlocked') {
     chrome.tabs.sendMessage(tabId, { type: 'UNLOCK', group: evalResult.group, unlockUntil: evalResult.unlockUntil }).catch(() => {});
   } else {
@@ -338,7 +341,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // We send back ok:true/false; on success we set unlockUntil and the
     // next tick will send UNLOCK to the content script.
     const c = cfg();
-    const ok = msg.password === c.password;
+    // If no password is configured, reject every attempt — the user must
+    // complete the popup's first-time setup before unlock is possible.
+    const ok = !!c.password && msg.password === c.password;
     if (ok && tabId != null) {
       const session = tabSessions.get(tabId);
       const ctx = session?.segments?.slice(-1)?.[0]?.context;

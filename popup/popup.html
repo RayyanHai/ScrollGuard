@@ -6,6 +6,35 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
+  <!-- First-time setup view. Replaces the entire dashboard until the user
+       sets an unlock password. Toggled in popup.js based on userConfig. -->
+  <div id="setupView" hidden>
+    <header>
+      <div class="brand">ScrollGuard</div>
+    </header>
+    <section class="setup">
+      <h1 class="setup-title">Welcome</h1>
+      <p class="setup-sub">
+        Set your unlock password before you start. You'll type this on the block screen to buy a short grace window.
+        Make it memorable, but annoying enough that you have to pause and think.
+      </p>
+      <div class="field-stack">
+        <label for="setupPw">New password</label>
+        <input type="password" id="setupPw" autocomplete="new-password" placeholder="at least 4 characters">
+      </div>
+      <div class="field-stack">
+        <label for="setupPwConfirm">Confirm password</label>
+        <input type="password" id="setupPwConfirm" autocomplete="new-password" placeholder="type it again">
+      </div>
+      <div class="actions">
+        <button id="setupSave" class="primary">Save and continue</button>
+        <span id="setupMsg" class="msg"></span>
+      </div>
+    </section>
+  </div>
+
+  <!-- Normal dashboard. Hidden until setup is complete. -->
+  <div id="mainView" hidden>
   <header>
     <div class="brand">ScrollGuard</div>
     <div class="date" id="date"></div>
@@ -71,6 +100,7 @@
     <button class="ghost danger" id="lockNow">Lock me now</button>
     <button class="ghost" id="resetToday">Reset today</button>
   </section>
+  </div><!-- /mainView -->
 
   <script src="../lib/classifier.js"></script>
   <script src="../lib/config.js"></script>

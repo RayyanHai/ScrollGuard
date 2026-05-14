@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ScrollGuard",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "Personal Instagram intervention tool. Tracks per-context usage and intervenes when limits are hit.",
   "permissions": ["storage", "webNavigation", "tabs"],
   "host_permissions": ["*://*.instagram.com/*"],
