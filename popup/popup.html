@@ -35,74 +35,63 @@
 
   <!-- Normal dashboard. Hidden until setup is complete. -->
   <div id="mainView" hidden>
-  <header>
-    <div class="brand">ScrollGuard</div>
-    <div class="date" id="date"></div>
-  </header>
+    <header>
+      <div class="brand">ScrollGuard</div>
+      <div class="date" id="date"></div>
+    </header>
 
-  <section>
-    <h2>Today</h2>
-    <div id="groups"></div>
-    <div class="meta" id="meta"></div>
-  </section>
+    <!-- Per-platform sections are injected here by popup.js. Each section
+         has its own bar, meta, and lock/reset buttons. -->
+    <div id="platformSections"></div>
 
-  <section>
-    <h2>
-      Settings
-      <button class="link" id="toggleSettings" aria-expanded="false">edit</button>
-    </h2>
-    <div id="settingsBody" hidden>
-      <div class="row">
-        <label for="lim-scroll">Scroll <span class="muted">(feed + stories)</span></label>
-        <span class="val" id="lim-scroll-val"></span>
-        <input type="range" id="lim-scroll" min="0.5" max="15" step="0.5">
-      </div>
-      <div class="row">
-        <label for="lim-reels">Reels</label>
-        <span class="val" id="lim-reels-val"></span>
-        <input type="range" id="lim-reels" min="0.5" max="15" step="0.5">
-      </div>
-      <div class="row">
-        <label for="lim-other">Other <span class="muted">(explore, profile)</span></label>
-        <span class="val" id="lim-other-val"></span>
-        <input type="range" id="lim-other" min="0.5" max="15" step="0.5">
-      </div>
-      <div class="row">
-        <label for="cooldown">Block cooldown</label>
-        <span class="val" id="cooldown-val"></span>
-        <input type="range" id="cooldown" min="0.5" max="120" step="0.5">
-      </div>
-      <div class="row">
-        <label for="grace">Unlock grace</label>
-        <span class="val" id="grace-val"></span>
-        <input type="range" id="grace" min="0.5" max="15" step="0.5">
-      </div>
+    <section>
+      <h2>
+        Settings <span class="muted">(applies to all platforms)</span>
+        <button class="link" id="toggleSettings" aria-expanded="false">edit</button>
+      </h2>
+      <div id="settingsBody" hidden>
+        <div class="row">
+          <label for="lim-daily">Daily limit <span class="muted">(per platform)</span></label>
+          <span class="val" id="lim-daily-val"></span>
+          <input type="range" id="lim-daily" min="0.5" max="60" step="0.5">
+        </div>
+        <div class="row">
+          <label for="cooldown">Block cooldown</label>
+          <span class="val" id="cooldown-val"></span>
+          <input type="range" id="cooldown" min="0.5" max="120" step="0.5">
+        </div>
+        <div class="row">
+          <label for="grace">Unlock grace</label>
+          <span class="val" id="grace-val"></span>
+          <input type="range" id="grace" min="0.5" max="30" step="0.5">
+        </div>
 
-      <div class="divider"></div>
+        <div class="divider"></div>
 
-      <div class="field-stack">
-        <label for="curPw">Current password</label>
-        <input type="password" id="curPw" autocomplete="off" placeholder="required to change password">
-      </div>
-      <div class="field-stack">
-        <label for="newPw">New password</label>
-        <input type="password" id="newPw" autocomplete="new-password" placeholder="leave blank to keep">
-      </div>
+        <div class="pw-section">
+          <div class="pw-head">Change password</div>
+          <div class="pw-note">Both fields required to change. Leave blank to keep your current password.</div>
 
-      <div class="actions">
-        <button id="save" class="primary">Save</button>
-        <span id="msg" class="msg"></span>
-      </div>
-    </div>
-  </section>
+          <div class="field-stack">
+            <label for="curPw">Current password</label>
+            <input type="password" id="curPw" autocomplete="off" placeholder="your existing password">
+            <span class="msg field-err" id="curPwErr"></span>
+          </div>
+          <div class="field-stack">
+            <label for="newPw">New password</label>
+            <input type="password" id="newPw" autocomplete="new-password" placeholder="min 4 characters">
+            <span class="msg field-err" id="newPwErr"></span>
+          </div>
+        </div>
 
-  <section class="footer-actions">
-    <button class="ghost danger" id="lockNow">Lock me now</button>
-    <button class="ghost" id="resetToday">Reset today</button>
-  </section>
+        <div class="actions">
+          <button id="save" class="primary">Save</button>
+          <span id="msg" class="msg"></span>
+        </div>
+      </div>
+    </section>
   </div><!-- /mainView -->
 
-  <script src="../lib/classifier.js"></script>
   <script src="../lib/config.js"></script>
   <script src="popup.js"></script>
 </body>

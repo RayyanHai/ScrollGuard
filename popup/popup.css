@@ -49,46 +49,71 @@ h2 {
   display: flex; justify-content: space-between; align-items: center;
 }
 
-/* --- Today / groups --- */
-
-.group-row {
-  display: grid;
-  grid-template-columns: 60px 1fr auto;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 0;
+/* h2 muted subtitle (e.g. "applies to all platforms") */
+h2 .muted {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted-2);
+  font-size: 10px;
+  margin-left: 4px;
 }
-.group-row .name { color: var(--text); font-size: 13px; }
-.group-row .value {
-  font: 600 12px/1 ui-monospace, "SF Mono", monospace;
-  color: var(--muted);
-  text-align: right;
+
+/* --- Per-platform display block --- */
+
+.platform-display {
+  display: flex; flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 6px 0 2px;
+}
+
+/* Per-platform inline action row (Lock / Reset). Lives inside each platform
+   section, replacing the v2 global footer-actions row. */
+.platform-actions {
+  display: flex; gap: 8px;
+  margin-top: 12px;
+}
+.platform-actions button { flex: 1; }
+.today-value {
+  font: 600 30px/1 ui-monospace, "SF Mono", monospace;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  text-align: center;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+  transition: color 0.3s ease;
 }
-.group-row.good     .value { color: var(--accent); }
-.group-row.warn     .value { color: var(--warn); }
-.group-row.danger   .value { color: var(--danger); }
-.group-row.blocked  .value { color: var(--danger); }
-.group-row.unlocked .value { color: var(--warn); }
+.today-value.good     { color: var(--accent); }
+.today-value.warn     { color: var(--warn); }
+.today-value.danger   { color: var(--danger); }
+.today-value.blocked  { color: var(--danger); }
+.today-value.unlocked { color: var(--warn); }
 
-.bar {
+.today-bar {
   position: relative;
-  height: 6px; border-radius: 3px;
+  height: 8px; border-radius: 4px;
   background: var(--panel-2);
   overflow: hidden;
 }
-.bar > .fill {
+.today-fill {
   position: absolute; inset: 0 auto 0 0;
+  width: 0%;
   background: var(--accent);
-  border-radius: 3px;
+  border-radius: 4px;
   transition: width 0.4s ease, background 0.3s ease;
 }
-.bar > .fill.good     { background: var(--accent); }
-.bar > .fill.warn     { background: var(--warn); }
-.bar > .fill.danger   { background: var(--danger); }
-.bar > .fill.blocked  { background: var(--danger); }
-.bar > .fill.unlocked { background: var(--warn); }
+.today-fill.good     { background: var(--accent); }
+.today-fill.warn     { background: var(--warn); }
+.today-fill.danger   { background: var(--danger); }
+.today-fill.blocked  { background: var(--danger); }
+.today-fill.unlocked { background: var(--warn); }
+
+.today-sub {
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 
 .meta {
   margin-top: 14px;
@@ -144,6 +169,7 @@ h2 {
 }
 .field-stack label { color: var(--text); font-size: 12px; }
 .field-stack input { width: 100%; }
+.field-stack .field-err { min-height: 14px; }
 
 input[type=password], input[type=text] {
   background: var(--panel);
@@ -155,6 +181,28 @@ input[type=password], input[type=text] {
   font-variant-numeric: tabular-nums;
 }
 input:focus { outline: none; border-color: var(--accent); }
+
+/* --- Change password subsection --- */
+
+.pw-section {
+  margin-top: 4px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.pw-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.pw-note {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
 
 /* --- Range slider styling (Webkit/Blink — Chrome only) --- */
 input[type=range] {

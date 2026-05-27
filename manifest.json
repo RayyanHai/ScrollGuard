@@ -1,17 +1,23 @@
 {
   "manifest_version": 3,
   "name": "ScrollGuard",
-  "version": "1.1.0",
-  "description": "Personal Instagram intervention tool. Tracks per-context usage and intervenes when limits are hit.",
+  "version": "2.1.0",
+  "description": "Personal Instagram + TikTok intervention tool. Tracks daily usage per platform and intervenes when the limit is hit.",
   "permissions": ["storage", "webNavigation", "tabs"],
-  "host_permissions": ["*://*.instagram.com/*"],
+  "host_permissions": [
+    "*://*.instagram.com/*",
+    "*://*.tiktok.com/*"
+  ],
   "background": {
     "service_worker": "background/service-worker.js"
   },
   "content_scripts": [
     {
-      "matches": ["*://*.instagram.com/*"],
-      "js": ["lib/classifier.js", "content/intervention.js", "content/detector.js"],
+      "matches": [
+        "*://*.instagram.com/*",
+        "*://*.tiktok.com/*"
+      ],
+      "js": ["content/intervention.js", "content/detector.js"],
       "run_at": "document_idle"
     }
   ],
@@ -35,7 +41,10 @@
   "web_accessible_resources": [
     {
       "resources": ["dashboard/dashboard.html", "dashboard/dashboard.js"],
-      "matches": ["*://*.instagram.com/*"]
+      "matches": [
+        "*://*.instagram.com/*",
+        "*://*.tiktok.com/*"
+      ]
     }
   ]
 }

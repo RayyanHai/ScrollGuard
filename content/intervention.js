@@ -1,14 +1,13 @@
 // Intervention UI: full-page block overlay.
 //
-// This script runs in the IG page's isolated world. It receives BLOCK and
-// UNBLOCK messages from the service worker (which decides when to send
-// them based on the rules engine in service-worker.js). It does NOT decide
-// itself — the SW is the single source of truth for "is this context
-// blocked right now". The content script just renders.
+// v3: per-platform. The same script runs on every tracked site (Instagram,
+// TikTok, ...). The SW tells us which platform we're on via the `platform`
+// and `platformLabel` fields on BLOCK messages, so the overlay copy reads
+// "You hit your TikTok limit" on tiktok.com etc. The SW is the single source
+// of truth for "are we blocked right now".
 //
-// Why a full-page overlay rather than the spec's blur+nudge: you asked to
-// feel the intervention, not be politely tapped on the shoulder. We can
-// dial down to blur later in lib/config.js if it's too aggressive.
+// Why a full-page overlay rather than the spec's blur+nudge: the goal is to
+// feel the intervention, not be politely tapped on the shoulder.
 
 const SG_OVERLAY_ID = 'scrollguard-overlay-root';
 
@@ -70,7 +69,8 @@ function ensureOverlay() {
   return el;
 }
 
-function renderBlocked({ group, blockedUntil, passwordSet }) {
+function renderBlocked({ blockedUntil, passwordSet, platformLabel }) {
+  const label = platformLabel || 'this site';
   const el = ensureOverlay();
   const root = el.shadowRoot;
   root.innerHTML = `
@@ -111,11 +111,6 @@ function renderBlocked({ group, blockedUntil, passwordSet }) {
       }
       input.pw:focus { border-color: #f87171; }
       .err { color: #fca5a5; font-size: 13px; margin-top: 8px; min-height: 18px; }
-      .group-pill {
-        display: inline-block; padding: 2px 10px; border-radius: 999px;
-        background: #4c1d1d; color: #fecaca; font-size: 12px; letter-spacing: 0.04em;
-        text-transform: uppercase; margin-bottom: 12px;
-      }
       .setup-note {
         margin-top: 32px;
         padding: 14px 16px;
@@ -130,9 +125,8 @@ function renderBlocked({ group, blockedUntil, passwordSet }) {
     </style>
     <div class="wrap">
       <div class="card">
-        <div class="group-pill">${group}</div>
         <h1>Blocked</h1>
-        <p class="sub">You hit your ${group} limit.</p>
+        <p class="sub">You hit your ${label} limit.</p>
         <div class="countdown" id="cd">--:--</div>
         ${passwordSet ? `
         <div class="pwline">
@@ -212,7 +206,7 @@ function renderBlocked({ group, blockedUntil, passwordSet }) {
   currentMode = 'blocked';
 }
 
-function renderUnlocked({ group, unlockUntil }) {
+function renderUnlocked({ unlockUntil }) {
   uninstallVideoBlocker();
   // While unlocked, just remove the overlay. We could show a tiny banner
   // with the unlock countdown, but you said you wanted minimal — the SW
