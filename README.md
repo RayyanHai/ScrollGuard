@@ -5,7 +5,7 @@
 <h1 align="center">ScrollGuard</h1>
 
 <p align="center">
-  A Chrome extension that tracks Instagram usage by context (reels, stories, feed, DMs, explore, profile) and blocks you when you've spent too long in any of them. Built as a personal behavioral-intervention tool — not a polished product.
+  A Chrome extension that tracks how long you spend on Instagram and TikTok each day and blocks you once you cross your daily limit on either. Built as a personal behavioral-intervention tool — not a polished product.
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
 
 ---
 
-Whenever you hit a time limit (that you set) on reels or just by scrolling through your IG feed on the website, the extension will take over the page with a full-screen block overlay and pause anything in the background until the cooldown (that you set) expires or you enter a password for a short grace period. 
+Whenever you hit a daily time limit (that you set) on Instagram or TikTok in the browser, the extension will take over the page with a full-screen block overlay and pause anything in the background until the cooldown (that you set) expires or you enter a password for a short grace period. Each platform has its own independent daily counter and block state — burning your Instagram budget doesn't touch TikTok and vice versa.
 
 ## Screenshots
 <p align="center">
@@ -52,13 +52,14 @@ Even when I block doomscrolling apps on my phone, I sometimes still scroll on my
 
 ## Features
 
-- **Per-context tracking.** Reels, stories, IG feed, profile, and DM's are all tracked separately. DM's do not count towards the limit.
-- **Active vs Passive Time** Reels and stories only count time when the tab is focused and visible. Closing your device or switching tabs stops the clock.
-- **Block + cooldown.** When a group hits its limit, every context in that group is blocked for the full cooldown duration (default 30 min).
-- **Password** A correct password buys you a fixed unlock window (default 30 sec), then the block resumes for the rest of its cooldown.
-- **Session classification.** Each Instagram session is classified at end as `quick_check` (<60s), `browsing` (1–5 min), or `deep_scroll` (>5 min) for retrospective awareness. Each session of usage is classified as either a *quick check* (<60s), *browsing* (1-5min) or a *deep scroll* (>5 minutes).
-- **Popup dashboard.**  Extension dashboard displays daily active time with threshold-based coloring, session count, session classification, current block countdowns, and time limit settings. 
-- **Edge Cases** Any restarts, browser shutdowns, or device shutdowns fail to break the blocker. All state lives in `chrome.storage.local`.
+- **Independent per-platform tracking.** Instagram and TikTok each get their own daily counter, their own block state, and their own dashboard section. Settings (limit, cooldown, grace, password) are shared.
+- **Daily time limit per platform.** ScrollGuard counts the total time you spend actively on each site, then blocks just that platform once you cross the limit.
+- **Active vs Passive Time.** Counts only when you're actively focused on the tab (active + visible + window focused). Background tabs or minimized windows don't count.
+- **Block + cooldown with auto-reset.** When you hit the daily limit, the platform is blocked for the full cooldown duration (default 30 min). Once the cooldown expires, that platform's counter resets to 0 — the cooldown IS the punishment, not a one-shot lockout.
+- **Password.** A correct password buys you a fixed unlock window (default 5 min), then the block resumes for the rest of its cooldown. One password, both platforms.
+- **Session classification.** Each session is classified at end as a *quick check* (<60s), *browsing* (1–5 min), or *deep scroll* (>5 min) for retrospective awareness.
+- **Popup dashboard.** One section per platform with daily active time, threshold-based coloring, session count, classification breakdown, block countdowns, and Lock/Reset buttons.
+- **Edge Cases.** Any restarts, browser shutdowns, or device shutdowns fail to break the blocker. All state lives in `chrome.storage.local`.
 
 ## Install
 
@@ -76,36 +77,35 @@ Download the latest release: [Releases page](https://github.com/RayyanHai/Scroll
 
 ## Configuration
 
-- Scroll Limit: Time limit for feed + stories
-- Reels Limit: Time limit for just reels
-- Other limit: Time limit for explore, profile, and other random pages
-- Block cooldown: How long your IG is blocked for after reaching a limit
-- Unlock Grace: How much time a password unlock grants you
-- Password: Phrase to bypass a block
+- Daily limit: Total time on Instagram per day before blocking
+- Block cooldown: How long the block stays active after a limit hit
+- Unlock grace: How much time a password unlock grants
+- Password: Phrase to bypass an active block
 
 ## How it works
 
 ```
-nav events  →  per-tab session/segment tracking
+nav events  →  per-tab session tracking (tagged with platform)
               ↓
-           1-second tick
+     30s chrome.alarms tick
               ↓
-   per-group active-time accumulator
+   per-platform active-time accumulator
               ↓
-       limit check → block state
+   limit check → per-platform block state
               ↓
    content script BLOCK / UNLOCK / CLEAR
 ```
 
-- **Service worker** (`background/service-worker.js`) is the brain. Listens to `webNavigation`, `tabs`, and `windows` events; runs a 1-second `setInterval` that decides what state each tab should be in.
-- **Content script** (`content/detector.js`, `content/intervention.js`) runs in the Instagram page. Reports Page Visibility, renders the block overlay in a Shadow DOM, and pauses videos when blocked.
-- **Storage** (`chrome.storage.local`, wrapped in `lib/storage.js`) holds in-flight sessions, completed sessions bucketed by date, the per-group active-time counter, the current block state, and user-edited config.
+- **Service worker** (`background/service-worker.js`) is the brain. Listens to `webNavigation`, `tabs`, and `windows` events; uses a `chrome.alarms` tick (every ~30s) to accumulate active time per platform and decide each platform's block state. When a platform's cooldown expires, its counter resets to 0.
+- **Content script** (`content/detector.js`, `content/intervention.js`) runs in every tracked page (Instagram, TikTok). Reports Page Visibility, renders the block overlay in a Shadow DOM with platform-aware copy, and pauses videos when blocked.
+- **Storage** (`chrome.storage.local`, wrapped in `lib/storage.js`) holds in-flight sessions, completed sessions bucketed by date, per-platform daily counters (`dailyActive[platform]`), per-platform block state (`blockState[platform]`), and user-edited config.
+- **Platforms** are declared in `lib/config.js` (`SG_PLATFORMS`). Adding another site is a matter of adding one entry there plus the host pattern in `manifest.json`.
 
 ## Roadmap
 
 Some things I have planned for the future of the project given more time:
 
-- **More Platforms.** Extend usage across different platforms like TikTok and YouTube shorts that both use similar styles of scrolling and feeds.
+- **More Platforms.** YouTube Shorts next — same scrolling pattern, same problem. The platform abstraction in `SG_PLATFORMS` makes adding sites straightforward.
 
 - **Continuous Integration.** Add unit tests for the rules engine and run them on every PR
 

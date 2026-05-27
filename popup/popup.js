@@ -1,18 +1,12 @@
-// Popup logic.
+// Popup logic (v3 — per-platform).
 //
 // Reads from chrome.storage.local: today's sessions bucket, currentSessions,
-// userConfig, blockState. Writes userConfig when saving settings. Talks to
-// the SW only for actions that should be authoritative there: LOCK_NOW,
-// RESET_TODAY. (Password change is just a userConfig write — verifying the
-// CURRENT password happens here in the popup using the loaded config, since
-// the popup is only opened by the user themselves.)
-
-const GROUPS = [
-  { key: 'scroll', label: 'Scroll' },
-  { key: 'reels',  label: 'Reels' },
-  { key: 'other',  label: 'Other' },
-  { key: 'dm',     label: 'DMs' },
-];
+// userConfig, blockState ({ [platform]: ... }), dailyActive ({ [platform]: ... }).
+// Writes userConfig when saving settings.
+//
+// Each tracked platform (from SG_PLATFORMS in lib/config.js) gets its own
+// section in the dashboard with its own bar, meta, and lock/reset buttons.
+// Settings (limit, cooldown, grace, password) are shared across all platforms.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,142 +24,184 @@ function fmtRemaining(ts) {
   return fmtMs(ts - Date.now());
 }
 
-function todayDateKey() {
-  const d = new Date();
-  return `sessions:${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function formatLocalDate(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+function todayDateKey() {
+  return `sessions:${formatLocalDate(Date.now())}`;
+}
+
+// Merge user-configured overrides on top of the SG_CONFIG defaults loaded
+// from lib/config.js.
 function effectiveConfig(userConfig) {
+  const defaults = self.SG_CONFIG || {};
   return {
-    limits: { ...self.SG_CONFIG.limits, ...(userConfig.limits || {}) },
-    contextToGroup: self.SG_CONFIG.contextToGroup,
-    blockCooldownMs: userConfig.blockCooldownMs ?? self.SG_CONFIG.blockCooldownMs,
-    passwordGraceMs: userConfig.passwordGraceMs ?? self.SG_CONFIG.passwordGraceMs,
-    password: userConfig.password ?? self.SG_CONFIG.password,
+    limitMs: userConfig.limitMs ?? defaults.limitMs ?? 30 * 60_000,
+    blockCooldownMs: userConfig.blockCooldownMs ?? defaults.blockCooldownMs ?? 30 * 60_000,
+    passwordGraceMs: userConfig.passwordGraceMs ?? defaults.passwordGraceMs ?? 5 * 60_000,
+    password: userConfig.password ?? defaults.password ?? null,
   };
+}
+
+function platforms() {
+  return self.SG_PLATFORMS || [];
 }
 
 async function loadAll() {
   const dateKey = todayDateKey();
-  const r = await chrome.storage.local.get([dateKey, 'currentSessions', 'userConfig', 'blockState']);
+  const r = await chrome.storage.local.get([dateKey, 'currentSessions', 'userConfig', 'blockState', 'dailyActive']);
   return {
     sessions: r[dateKey] || [],
     currentSessions: r.currentSessions || {},
     userConfig: r.userConfig || {},
     blockState: r.blockState || {},
+    dailyActive: r.dailyActive || {},
   };
 }
 
-// Sum activeMs from completed + in-flight sessions, grouped by limit-group.
-// Untracked contexts (DMs) are summed under 'dm' for display.
-function computeTotals(sessions, currentSessions, contextToGroup) {
-  const totals = { scroll: 0, reels: 0, other: 0, dm: 0 };
-  const allSegments = [];
-  for (const s of sessions) for (const seg of s.segments) allSegments.push(seg);
-  for (const s of Object.values(currentSessions)) for (const seg of s.segments) allSegments.push(seg);
-  for (const seg of allSegments) {
-    const grp = contextToGroup[seg.context];
-    if (grp) totals[grp] += seg.activeMs;
-    else totals.dm += seg.activeMs; // DMs are intentionally unblockable
-  }
-  return totals;
+// Older session shapes may lack `platform`. Default to instagram for legacy.
+function sessionPlatform(s) {
+  return s.platform || 'instagram';
 }
 
-function classificationCounts(sessions) {
+function sessionActiveMs(s) {
+  if (typeof s.activeMs === 'number') return s.activeMs;
+  if (Array.isArray(s.segments)) {
+    let sum = 0;
+    for (const seg of s.segments) sum += (seg.activeMs || 0);
+    return sum;
+  }
+  return 0;
+}
+
+// Authoritative source is dailyActive[platform].ms (maintained by the SW).
+// Sessions are a fallback when dailyActive is missing/stale.
+function computeTodayActiveMs(platformId, sessions, currentSessions, dailyActive) {
+  const today = formatLocalDate(Date.now());
+  const da = dailyActive[platformId];
+  if (da && da.date === today && typeof da.ms === 'number') return da.ms;
+  let sum = 0;
+  for (const s of sessions) if (sessionPlatform(s) === platformId) sum += sessionActiveMs(s);
+  for (const s of Object.values(currentSessions)) if (sessionPlatform(s) === platformId) sum += sessionActiveMs(s);
+  return sum;
+}
+
+function classificationCounts(sessions, platformId) {
   const out = { quick_check: 0, browsing: 0, deep_scroll: 0 };
-  for (const s of sessions) if (s.classification && out[s.classification] != null) out[s.classification]++;
+  for (const s of sessions) {
+    if (sessionPlatform(s) !== platformId) continue;
+    if (s.classification && out[s.classification] != null) out[s.classification]++;
+  }
   return out;
 }
 
-function inflightDescription(currentSessions) {
-  const sessions = Object.values(currentSessions);
-  if (!sessions.length) return null;
-  // Show the most recently updated one. (In practice you have at most one IG
-  // tab open, but if you have multiple, this picks the freshest.)
-  const s = sessions.sort((a, b) => b.startedAt - a.startedAt)[0];
-  const seg = s.segments[s.segments.length - 1];
-  if (!seg) return null;
-  return { context: seg.context, activeMs: seg.activeMs };
+function inflightForPlatform(currentSessions, platformId) {
+  const list = Object.values(currentSessions).filter((s) => sessionPlatform(s) === platformId);
+  if (!list.length) return null;
+  const s = list.sort((a, b) => b.startedAt - a.startedAt)[0];
+  return { activeMs: sessionActiveMs(s) };
+}
+
+function countSessions(sessions, currentSessions, platformId) {
+  let n = 0;
+  for (const s of sessions) if (sessionPlatform(s) === platformId) n++;
+  for (const s of Object.values(currentSessions)) if (sessionPlatform(s) === platformId) n++;
+  return n;
 }
 
 // ---------------------------------------------------------------------------
-// Render
+// Render — per platform section
 // ---------------------------------------------------------------------------
 
-// Threshold-based coloring on absolute usage (not relative to limit). The
-// bar shows raw time spent, scaled to BAR_SCALE_MS so the visual fills as
-// you spend more. Limits still drive the BLOCK overlay separately — they
-// just don't appear in the popup display anymore.
-const BAR_SCALE_MS = 45 * 60_000; // bar is fully filled at 45 min usage
 const THRESH_WARN_MS = 15 * 60_000;
 const THRESH_DANGER_MS = 30 * 60_000;
 
-function severityForUsage(ms) {
-  if (ms >= THRESH_DANGER_MS) return 'danger';
-  if (ms >= THRESH_WARN_MS) return 'warn';
+function severity(usedMs) {
+  if (usedMs >= THRESH_DANGER_MS) return 'danger';
+  if (usedMs >= THRESH_WARN_MS) return 'warn';
   return 'good';
 }
 
-function renderGroups(totals, cfg, blockState) {
-  const root = document.getElementById('groups');
-  root.innerHTML = '';
-  const now = Date.now();
+// Build the static DOM for one platform's dashboard section. Done once on
+// init; the refresh loop only updates the live values inside.
+function buildPlatformSection(platform) {
+  const section = document.createElement('section');
+  section.dataset.platform = platform.id;
+  section.innerHTML = `
+    <h2>${platform.label}</h2>
+    <div class="platform-display">
+      <div class="today-value" data-role="value">0:00</div>
+      <div class="today-bar"><div class="today-fill" data-role="fill"></div></div>
+      <div class="today-sub" data-role="sub"></div>
+    </div>
+    <div class="meta" data-role="meta"></div>
+    <div class="platform-actions">
+      <button class="ghost danger" data-action="lock">Lock me now</button>
+      <button class="ghost" data-action="reset">Reset today</button>
+    </div>
+  `;
 
-  for (const { key, label } of GROUPS) {
-    const used = totals[key] || 0;
-    const bs = blockState[key];
-    const isBlocked = bs && bs.blockedUntil > now;
-    const isUnlocked = isBlocked && bs.unlockUntil && bs.unlockUntil > now;
+  section.querySelector('[data-action="lock"]').addEventListener('click', async () => {
+    if (!confirm(`Lock ${platform.label} for the cooldown duration?`)) return;
+    await chrome.runtime.sendMessage({ type: 'LOCK_NOW', platform: platform.id });
+    refresh();
+  });
+  section.querySelector('[data-action="reset"]').addEventListener('click', async () => {
+    if (!confirm(`Clear today's ${platform.label} time and any active block?`)) return;
+    await chrome.runtime.sendMessage({ type: 'RESET_TODAY', platform: platform.id });
+    refresh();
+  });
 
-    // Default: usage-driven bar + threshold color.
-    let pct = Math.min(100, (used / BAR_SCALE_MS) * 100);
-    let fillClass = severityForUsage(used);
-    let valueText = fmtMs(used);
-    let rowMod = severityForUsage(used);
-
-    // Override visuals for active block / unlock states. The countdown
-    // takes priority over usage display because it's the actionable info.
-    if (isBlocked && !isUnlocked) {
-      pct = 100;
-      fillClass = 'blocked';
-      valueText = `🔒 ${fmtRemaining(bs.blockedUntil)}`;
-      rowMod = 'blocked';
-    } else if (isUnlocked) {
-      pct = 100;
-      fillClass = 'unlocked';
-      valueText = `🔓 ${fmtRemaining(bs.unlockUntil)}`;
-      rowMod = 'unlocked';
-    }
-
-    const row = document.createElement('div');
-    row.className = 'group-row ' + rowMod;
-    row.innerHTML = `
-      <div class="name">${label}</div>
-      <div class="bar"><div class="fill ${fillClass}" style="width:${pct}%"></div></div>
-      <div class="value">${valueText}</div>
-    `;
-    root.appendChild(row);
-  }
+  return section;
 }
 
-function renderMeta(sessions, currentSessions, totals) {
-  const meta = document.getElementById('meta');
-  meta.innerHTML = '';
+function renderPlatform(section, platform, usedMs, cfg, bs, sessions, currentSessions) {
+  const valueEl = section.querySelector('[data-role="value"]');
+  const fillEl = section.querySelector('[data-role="fill"]');
+  const subEl = section.querySelector('[data-role="sub"]');
+  const metaEl = section.querySelector('[data-role="meta"]');
 
-  const sessionCount = sessions.length + Object.keys(currentSessions).length;
-  const totalAll = Object.values(totals).reduce((a, b) => a + b, 0);
-  const cls = classificationCounts(sessions);
+  const now = Date.now();
+  const isBlocked = bs && bs.blockedUntil && bs.blockedUntil > now;
+  const isUnlocked = bs && bs.unlockUntil && bs.unlockUntil > now;
+
+  let pct = cfg.limitMs > 0 ? Math.min(100, (usedMs / cfg.limitMs) * 100) : 0;
+  let mod = severity(usedMs);
+  let valueText = fmtMs(usedMs);
+
+  if (isUnlocked) {
+    pct = 100;
+    mod = 'unlocked';
+    valueText = `🔓 ${fmtRemaining(bs.unlockUntil)}`;
+  } else if (isBlocked) {
+    pct = 100;
+    mod = 'blocked';
+    valueText = `🔒 ${fmtRemaining(bs.blockedUntil)}`;
+  }
+
+  valueEl.textContent = valueText;
+  valueEl.className = 'today-value ' + mod;
+  fillEl.style.width = pct + '%';
+  fillEl.className = 'today-fill ' + mod;
+
+  const limitMin = Math.round(cfg.limitMs / 60_000);
+  subEl.textContent = `of ${limitMin} min daily limit`;
+
+  // Meta line.
+  metaEl.innerHTML = '';
+  const sessionCount = countSessions(sessions, currentSessions, platform.id);
+  const cls = classificationCounts(sessions, platform.id);
 
   const summary = document.createElement('div');
   summary.innerHTML = `
     <span>${sessionCount} session${sessionCount === 1 ? '' : 's'}</span>
     <span class="dot">·</span>
-    <span>${fmtMs(totalAll)} active</span>
+    <span>${fmtMs(usedMs)} active</span>
   `;
-  meta.appendChild(summary);
+  metaEl.appendChild(summary);
 
-  // Classification breakdown on its own line. Hide zero-count buckets to
-  // avoid showing "0 deep" early in the day.
   const parts = [];
   if (cls.quick_check) parts.push(`${cls.quick_check} quick`);
   if (cls.browsing)    parts.push(`${cls.browsing} browsing`);
@@ -174,21 +210,22 @@ function renderMeta(sessions, currentSessions, totals) {
     const breakdown = document.createElement('div');
     breakdown.className = 'breakdown';
     breakdown.innerHTML = parts.map(p => `<span>${p}</span>`).join('<span class="dot">·</span>');
-    meta.appendChild(breakdown);
+    metaEl.appendChild(breakdown);
   }
 
-  const inflight = inflightDescription(currentSessions);
+  const inflight = inflightForPlatform(currentSessions, platform.id);
   if (inflight) {
     const cur = document.createElement('div');
     cur.className = 'currently';
-    cur.innerHTML = `<span class="dim">Currently:</span> ${inflight.context} · <span class="dim">${fmtMs(inflight.activeMs)} active</span>`;
-    meta.appendChild(cur);
+    cur.innerHTML = `<span class="dim">Currently active:</span> ${fmtMs(inflight.activeMs)}`;
+    metaEl.appendChild(cur);
   }
 }
 
-// Display a slider's current value in human-friendly form: seconds when <1 min,
-// otherwise minutes (with .5 if fractional). The display is decorative — the
-// actual saved value is parseFloat(slider.value) * 60000.
+// ---------------------------------------------------------------------------
+// Settings inputs (shared across platforms)
+// ---------------------------------------------------------------------------
+
 function fmtSliderValue(min) {
   if (min < 1) return `${Math.round(min * 60)}s`;
   if (Number.isInteger(min)) return `${min} min`;
@@ -200,22 +237,17 @@ function updateValDisplay(id, min) {
   if (el) el.textContent = fmtSliderValue(min);
 }
 
-const SLIDER_IDS = ['lim-scroll', 'lim-reels', 'lim-other', 'cooldown', 'grace'];
+const SLIDER_IDS = ['lim-daily', 'cooldown', 'grace'];
 
 function populateSettingsInputs(cfg) {
   const set = (id, ms) => {
     const min = +(ms / 60000).toFixed(2);
     const slider = document.getElementById(id);
-    // Range inputs clamp to min/max — if a stored value exceeds the slider's
-    // range, the slider will silently clamp on assign. Bump max if needed so
-    // we don't lose user intent (rare; only matters if cfg has very large values).
     if (min > parseFloat(slider.max)) slider.max = String(min);
     slider.value = min;
     updateValDisplay(id, min);
   };
-  set('lim-scroll', cfg.limits.scroll);
-  set('lim-reels', cfg.limits.reels);
-  set('lim-other', cfg.limits.other);
+  set('lim-daily', cfg.limitMs);
   set('cooldown',  cfg.blockCooldownMs);
   set('grace',     cfg.passwordGraceMs);
 }
@@ -241,23 +273,31 @@ function showMessage(text, kind) {
   }
 }
 
+function setFieldErr(id, text) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = 'msg field-err' + (text ? ' err' : '');
+}
+
+function clearPwErrs() {
+  setFieldErr('curPwErr', '');
+  setFieldErr('newPwErr', '');
+}
+
 async function handleSave(currentCfg, currentUserConfig) {
+  clearPwErrs();
   const parseMin = (id) => Math.round(parseFloat(document.getElementById(id).value) * 60000);
 
   const next = { ...currentUserConfig };
-  next.limits = { ...(currentUserConfig.limits || {}) };
-  next.limits.scroll = parseMin('lim-scroll');
-  next.limits.reels  = parseMin('lim-reels');
-  next.limits.other  = parseMin('lim-other');
+  delete next.limits;
+
+  next.limitMs = parseMin('lim-daily');
   next.blockCooldownMs = parseMin('cooldown');
   next.passwordGraceMs = parseMin('grace');
 
-  // Validate limits are positive
-  for (const [k, v] of Object.entries(next.limits)) {
-    if (!Number.isFinite(v) || v <= 0) {
-      showMessage(`Invalid ${k} limit`, 'err');
-      return;
-    }
+  if (!Number.isFinite(next.limitMs) || next.limitMs <= 0) {
+    showMessage('Invalid daily limit', 'err'); return;
   }
   if (!Number.isFinite(next.blockCooldownMs) || next.blockCooldownMs <= 0) {
     showMessage('Invalid cooldown', 'err'); return;
@@ -266,37 +306,37 @@ async function handleSave(currentCfg, currentUserConfig) {
     showMessage('Invalid grace', 'err'); return;
   }
 
-  // Password change: require correct CURRENT password.
   const cur = document.getElementById('curPw').value;
   const newPw = document.getElementById('newPw').value;
   if (newPw) {
-    if (cur !== currentCfg.password) {
-      showMessage('Current password is wrong', 'err');
-      return;
+    let hasErr = false;
+    if (!cur) {
+      setFieldErr('curPwErr', 'Enter your current password');
+      hasErr = true;
+    } else if (cur !== currentCfg.password) {
+      setFieldErr('curPwErr', 'Wrong current password');
+      hasErr = true;
     }
     if (newPw.length < 4) {
-      showMessage('New password too short (min 4 chars)', 'err');
+      setFieldErr('newPwErr', 'New password too short (min 4)');
+      hasErr = true;
+    }
+    if (hasErr) {
+      showMessage('Fix password errors above', 'err');
       return;
     }
     next.password = newPw;
+  } else if (cur) {
+    setFieldErr('newPwErr', 'Enter a new password, or clear both fields');
+    showMessage('Fix password errors above', 'err');
+    return;
   }
 
   await chrome.storage.local.set({ userConfig: next });
   document.getElementById('curPw').value = '';
   document.getElementById('newPw').value = '';
+  clearPwErrs();
   showMessage('Saved', 'ok');
-}
-
-async function handleLockNow() {
-  if (!confirm('Lock all groups for the cooldown duration?')) return;
-  await chrome.runtime.sendMessage({ type: 'LOCK_NOW' });
-  refresh();
-}
-
-async function handleResetToday() {
-  if (!confirm('Clear today\'s accumulated time and any active blocks?')) return;
-  await chrome.runtime.sendMessage({ type: 'RESET_TODAY' });
-  refresh();
 }
 
 // ---------------------------------------------------------------------------
@@ -307,36 +347,36 @@ let lastCfg = null;
 let lastUserConfig = null;
 
 async function refresh() {
-  const { sessions, currentSessions, userConfig, blockState } = await loadAll();
+  const { sessions, currentSessions, userConfig, blockState, dailyActive } = await loadAll();
   const cfg = effectiveConfig(userConfig);
   lastCfg = cfg;
   lastUserConfig = userConfig;
 
-  const totals = computeTotals(sessions, currentSessions, cfg.contextToGroup);
-  renderGroups(totals, cfg, blockState);
-  renderMeta(sessions, currentSessions, totals);
+  for (const platform of platforms()) {
+    const section = document.querySelector(`section[data-platform="${platform.id}"]`);
+    if (!section) continue;
+    const usedMs = computeTodayActiveMs(platform.id, sessions, currentSessions, dailyActive);
+    const bs = blockState[platform.id] || null;
+    renderPlatform(section, platform, usedMs, cfg, bs, sessions, currentSessions);
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
-// First-time setup view. Shown when userConfig.password isn't set. Required
-// before the dashboard is reachable — keeps users from accidentally relying on
-// a default password they didn't pick.
 async function showSetupView() {
   document.getElementById('setupView').hidden = false;
   document.getElementById('mainView').hidden = true;
 
   const pw = document.getElementById('setupPw');
-  const confirm = document.getElementById('setupPwConfirm');
+  const confirmEl = document.getElementById('setupPwConfirm');
   const msg = document.getElementById('setupMsg');
   const save = document.getElementById('setupSave');
 
   setTimeout(() => pw.focus(), 50);
 
-  // Enter in either field submits.
-  for (const el of [pw, confirm]) {
+  for (const el of [pw, confirmEl]) {
     el.addEventListener('keydown', (e) => { if (e.key === 'Enter') save.click(); });
   }
 
@@ -344,7 +384,7 @@ async function showSetupView() {
     msg.textContent = '';
     msg.className = 'msg';
     const a = pw.value;
-    const b = confirm.value;
+    const b = confirmEl.value;
     if (!a || a.length < 4) {
       msg.textContent = 'Password must be at least 4 characters.';
       msg.className = 'msg err';
@@ -359,8 +399,6 @@ async function showSetupView() {
     const userConfig = current.userConfig || {};
     userConfig.password = a;
     await chrome.storage.local.set({ userConfig });
-    // Transition to main view. We re-run init logic from scratch since the
-    // main view hasn't been populated yet.
     document.getElementById('setupView').hidden = true;
     document.getElementById('mainView').hidden = false;
     await initMain();
@@ -370,6 +408,13 @@ async function showSetupView() {
 async function initMain() {
   document.getElementById('date').textContent =
     new Date().toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+
+  // Build one section per tracked platform.
+  const container = document.getElementById('platformSections');
+  container.innerHTML = '';
+  for (const platform of platforms()) {
+    container.appendChild(buildPlatformSection(platform));
+  }
 
   await refresh();
   populateSettingsInputs(lastCfg);
@@ -382,22 +427,20 @@ async function initMain() {
     e.target.textContent = body.hidden ? 'edit' : 'close';
   });
 
+  document.getElementById('curPw').addEventListener('input', () => setFieldErr('curPwErr', ''));
+  document.getElementById('newPw').addEventListener('input', () => setFieldErr('newPwErr', ''));
+
   document.getElementById('save').addEventListener('click', async () => {
     await handleSave(lastCfg, lastUserConfig);
-    // Reload so inputs reflect what was actually persisted (in case of clamping).
     await refresh();
     populateSettingsInputs(lastCfg);
   });
 
-  document.getElementById('lockNow').addEventListener('click', handleLockNow);
-  document.getElementById('resetToday').addEventListener('click', handleResetToday);
-
-  // Refresh every second so countdowns and currently-in indicator stay live
-  // while the popup is open.
+  // Refresh every second so countdowns and currently-active indicator stay
+  // live while the popup is open.
   setInterval(refresh, 1000);
 }
 
-// Entry point: decide which view to show based on whether a password is set.
 async function init() {
   const { userConfig = {} } = await chrome.storage.local.get('userConfig');
   if (!userConfig.password) {
