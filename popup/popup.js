@@ -6,7 +6,8 @@
 //
 // Each tracked platform (from SG_PLATFORMS in lib/config.js) gets its own
 // section in the dashboard with its own bar, meta, and lock/reset buttons.
-// Settings (limit, cooldown, grace, password) are shared across all platforms.
+// Settings (grant windows, math config, daily ceiling, password) are shared
+// across all platforms.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -36,12 +37,16 @@ function todayDateKey() {
 // Merge user-configured overrides on top of the SG_CONFIG defaults loaded
 // from lib/config.js.
 function effectiveConfig(userConfig) {
-  const defaults = self.SG_CONFIG || {};
+  const d = self.SG_CONFIG || {};
   return {
-    limitMs: userConfig.limitMs ?? defaults.limitMs ?? 30 * 60_000,
-    blockCooldownMs: userConfig.blockCooldownMs ?? defaults.blockCooldownMs ?? 30 * 60_000,
-    passwordGraceMs: userConfig.passwordGraceMs ?? defaults.passwordGraceMs ?? 5 * 60_000,
-    password: userConfig.password ?? defaults.password ?? null,
+    passwordEnabled: userConfig.passwordEnabled ?? d.passwordEnabled ?? true,
+    password: userConfig.password ?? d.password ?? null,
+    passwordGrantMs: userConfig.passwordGrantMs ?? d.passwordGrantMs ?? 5 * 60_000,
+    mathEnabled: userConfig.mathEnabled ?? d.mathEnabled ?? true,
+    mathCount: userConfig.mathCount ?? d.mathCount ?? 5,
+    mathDifficulty: userConfig.mathDifficulty ?? d.mathDifficulty ?? 2,
+    mathGrantMs: userConfig.mathGrantMs ?? d.mathGrantMs ?? 10 * 60_000,
+    dailyCeilingMs: userConfig.dailyCeilingMs ?? d.dailyCeilingMs ?? 60 * 60_000,
   };
 }
 
@@ -115,12 +120,17 @@ function countSessions(sessions, currentSessions, platformId) {
 // Render — per platform section
 // ---------------------------------------------------------------------------
 
-const THRESH_WARN_MS = 15 * 60_000;
-const THRESH_DANGER_MS = 30 * 60_000;
-
-function severity(usedMs) {
-  if (usedMs >= THRESH_DANGER_MS) return 'danger';
-  if (usedMs >= THRESH_WARN_MS) return 'warn';
+// Severity of today's usage, relative to the daily ceiling when one is set.
+// With no ceiling (0), fall back to fixed thresholds so the bar still colors.
+function severity(usedMs, ceilingMs) {
+  if (ceilingMs > 0) {
+    const pct = usedMs / ceilingMs;
+    if (pct >= 1) return 'danger';
+    if (pct >= 0.66) return 'warn';
+    return 'good';
+  }
+  if (usedMs >= 30 * 60_000) return 'danger';
+  if (usedMs >= 15 * 60_000) return 'warn';
   return 'good';
 }
 
@@ -144,7 +154,7 @@ function buildPlatformSection(platform) {
   `;
 
   section.querySelector('[data-action="lock"]').addEventListener('click', async () => {
-    if (!confirm(`Lock ${platform.label} for the cooldown duration?`)) return;
+    if (!confirm(`End your ${platform.label} scroll window now and re-lock it?`)) return;
     await chrome.runtime.sendMessage({ type: 'LOCK_NOW', platform: platform.id });
     refresh();
   });
@@ -164,21 +174,26 @@ function renderPlatform(section, platform, usedMs, cfg, bs, sessions, currentSes
   const metaEl = section.querySelector('[data-role="meta"]');
 
   const now = Date.now();
-  const isBlocked = bs && bs.blockedUntil && bs.blockedUntil > now;
   const isUnlocked = bs && bs.unlockUntil && bs.unlockUntil > now;
+  const ceilingMs = cfg.dailyCeilingMs || 0;
+  const ceilingHit = ceilingMs > 0 && usedMs >= ceilingMs;
 
-  let pct = cfg.limitMs > 0 ? Math.min(100, (usedMs / cfg.limitMs) * 100) : 0;
-  let mod = severity(usedMs);
+  // Bar reflects today's used time against the ceiling (if any).
+  let pct = ceilingMs > 0 ? Math.min(100, (usedMs / ceilingMs) * 100) : (usedMs > 0 ? 100 : 0);
+  let mod = severity(usedMs, ceilingMs);
   let valueText = fmtMs(usedMs);
 
   if (isUnlocked) {
-    pct = 100;
     mod = 'unlocked';
     valueText = `🔓 ${fmtRemaining(bs.unlockUntil)}`;
-  } else if (isBlocked) {
+  } else if (ceilingHit) {
     pct = 100;
     mod = 'blocked';
-    valueText = `🔒 ${fmtRemaining(bs.blockedUntil)}`;
+    valueText = `🔒 Daily limit`;
+  } else {
+    // Default state in the earn-to-scroll model: locked, awaiting a challenge.
+    mod = mod === 'good' ? 'blocked' : mod;
+    valueText = `🔒 Locked`;
   }
 
   valueEl.textContent = valueText;
@@ -186,8 +201,13 @@ function renderPlatform(section, platform, usedMs, cfg, bs, sessions, currentSes
   fillEl.style.width = pct + '%';
   fillEl.className = 'today-fill ' + mod;
 
-  const limitMin = Math.round(cfg.limitMs / 60_000);
-  subEl.textContent = `of ${limitMin} min daily limit`;
+  if (isUnlocked) {
+    subEl.textContent = `scroll window · ${fmtMs(usedMs)} used today`;
+  } else if (ceilingMs > 0) {
+    subEl.textContent = `${fmtMs(usedMs)} used of ${Math.round(ceilingMs / 60_000)} min daily ceiling`;
+  } else {
+    subEl.textContent = `${fmtMs(usedMs)} used today · no daily cap`;
+  }
 
   // Meta line.
   metaEl.innerHTML = '';
@@ -232,32 +252,51 @@ function fmtSliderValue(min) {
   return `${min.toFixed(1)} min`;
 }
 
+// Time sliders (value in minutes). `ceiling` is allowed to hit 0 = "off".
+const TIME_SLIDER_IDS = ['pw-grant', 'math-grant', 'ceiling'];
+
 function updateValDisplay(id, min) {
   const el = document.getElementById(id + '-val');
-  if (el) el.textContent = fmtSliderValue(min);
+  if (!el) return;
+  if (id === 'ceiling' && min <= 0) { el.textContent = 'off'; return; }
+  el.textContent = fmtSliderValue(min);
 }
 
-const SLIDER_IDS = ['lim-daily', 'cooldown', 'grace'];
+function updateCountDisplay(n) {
+  const el = document.getElementById('math-count-val');
+  if (el) el.textContent = `${n} problem${n === 1 ? '' : 's'}`;
+}
 
 function populateSettingsInputs(cfg) {
-  const set = (id, ms) => {
+  const setTime = (id, ms) => {
     const min = +(ms / 60000).toFixed(2);
     const slider = document.getElementById(id);
     if (min > parseFloat(slider.max)) slider.max = String(min);
     slider.value = min;
     updateValDisplay(id, min);
   };
-  set('lim-daily', cfg.limitMs);
-  set('cooldown',  cfg.blockCooldownMs);
-  set('grace',     cfg.passwordGraceMs);
+  setTime('pw-grant',   cfg.passwordGrantMs);
+  setTime('math-grant', cfg.mathGrantMs);
+  setTime('ceiling',    cfg.dailyCeilingMs);
+
+  const count = document.getElementById('math-count');
+  count.value = cfg.mathCount;
+  updateCountDisplay(cfg.mathCount);
+
+  document.getElementById('math-diff').value = String(cfg.mathDifficulty);
+  document.getElementById('pw-enabled').checked = !!cfg.passwordEnabled;
+  document.getElementById('math-enabled').checked = !!cfg.mathEnabled;
 }
 
 function wireSliderListeners() {
-  for (const id of SLIDER_IDS) {
+  for (const id of TIME_SLIDER_IDS) {
     document.getElementById(id).addEventListener('input', (e) => {
       updateValDisplay(id, parseFloat(e.target.value));
     });
   }
+  document.getElementById('math-count').addEventListener('input', (e) => {
+    updateCountDisplay(parseInt(e.target.value, 10));
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -290,20 +329,34 @@ async function handleSave(currentCfg, currentUserConfig) {
   const parseMin = (id) => Math.round(parseFloat(document.getElementById(id).value) * 60000);
 
   const next = { ...currentUserConfig };
+  // Drop retired legacy keys if they linger in stored config.
   delete next.limits;
+  delete next.limitMs;
+  delete next.blockCooldownMs;
+  delete next.passwordGraceMs;
 
-  next.limitMs = parseMin('lim-daily');
-  next.blockCooldownMs = parseMin('cooldown');
-  next.passwordGraceMs = parseMin('grace');
+  next.passwordGrantMs = parseMin('pw-grant');
+  next.mathGrantMs = parseMin('math-grant');
+  next.dailyCeilingMs = parseMin('ceiling'); // 0 allowed = no cap
+  next.mathCount = parseInt(document.getElementById('math-count').value, 10);
+  next.mathDifficulty = parseInt(document.getElementById('math-diff').value, 10);
+  next.passwordEnabled = document.getElementById('pw-enabled').checked;
+  next.mathEnabled = document.getElementById('math-enabled').checked;
 
-  if (!Number.isFinite(next.limitMs) || next.limitMs <= 0) {
-    showMessage('Invalid daily limit', 'err'); return;
+  if (!Number.isFinite(next.passwordGrantMs) || next.passwordGrantMs <= 0) {
+    showMessage('Invalid password window', 'err'); return;
   }
-  if (!Number.isFinite(next.blockCooldownMs) || next.blockCooldownMs <= 0) {
-    showMessage('Invalid cooldown', 'err'); return;
+  if (!Number.isFinite(next.mathGrantMs) || next.mathGrantMs <= 0) {
+    showMessage('Invalid math window', 'err'); return;
   }
-  if (!Number.isFinite(next.passwordGraceMs) || next.passwordGraceMs <= 0) {
-    showMessage('Invalid grace', 'err'); return;
+  if (!Number.isFinite(next.dailyCeilingMs) || next.dailyCeilingMs < 0) {
+    showMessage('Invalid daily ceiling', 'err'); return;
+  }
+  if (!Number.isFinite(next.mathCount) || next.mathCount < 1) {
+    showMessage('Invalid problem count', 'err'); return;
+  }
+  if (![1, 2, 3].includes(next.mathDifficulty)) {
+    showMessage('Invalid difficulty', 'err'); return;
   }
 
   const cur = document.getElementById('curPw').value;

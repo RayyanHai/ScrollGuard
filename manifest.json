@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ScrollGuard",
-  "version": "2.1.1",
-  "description": "Personal Instagram + TikTok intervention tool. Tracks daily usage per platform and intervenes when the limit is hit.",
+  "version": "3.0.0",
+  "description": "Personal Instagram + TikTok intervention tool. Sites are blocked by default; earn a scroll window with a password or by solving math problems.",
   "permissions": ["storage", "webNavigation", "tabs", "alarms"],
   "host_permissions": [
     "*://*.instagram.com/*",
@@ -17,8 +17,8 @@
         "*://*.instagram.com/*",
         "*://*.tiktok.com/*"
       ],
-      "js": ["content/intervention.js", "content/detector.js"],
-      "run_at": "document_idle"
+      "js": ["lib/config.js", "content/intervention.js", "content/detector.js"],
+      "run_at": "document_start"
     }
   ],
   "icons": {
