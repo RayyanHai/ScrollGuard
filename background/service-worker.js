@@ -1,9 +1,15 @@
-// ScrollGuard service worker (v3 — per-platform).
+// ScrollGuard service worker (v3 — earn-to-scroll, per-platform).
+//
+// Model is INVERTED vs earlier versions: tracked platforms are BLOCKED by
+// default. The only way in is to pass a challenge (password or math set) that
+// grants a fixed wall-clock scroll window. Grants don't stack; each pass opens
+// a fresh window. An optional per-platform daily ceiling caps ACTIVE scroll
+// time; once hit, unlocks are refused until midnight.
 //
 // Pipeline at a glance:
 //   nav events → per-tab session tracking → 30s alarm tick →
-//   per-platform dailyActive counter (auto-resets at midnight AND after each
-//   block cooldown) → limit check → per-platform block state →
+//   accrue active time ONLY while a platform's window is live →
+//   ceiling check (cut window short if hit) + window expiry →
 //   BLOCK/UNLOCK/CLEAR to that platform's content scripts
 //
 // State buckets (all keyed by platform id where it matters):
@@ -11,17 +17,12 @@
 //                     each session has a `platform` field
 //   tabState          in-memory only (cheap to rebuild from chrome APIs)
 //   tabPlatform       in-memory: tabId → platform id (or null)
-//   dailyActive       storage: { [platform]: { date, ms } }
-//   blockState        storage: { [platform]: { blockedUntil, unlockUntil } | null }
+//   dailyActive       storage: { [platform]: { date, ms } } — active scroll time used today
+//   blockState        storage: { [platform]: { unlockUntil } | null } — null/past = LOCKED
 //   lastTickAt        storage: persisted across SW restarts
 //
-// Key v3 changes:
-//   - Multi-platform: Instagram + TikTok, with the abstraction in place to add
-//     more later. Each platform has its own daily counter and own block.
-//   - Counter resets to 0 when that platform's block cooldown EXPIRES (not just
-//     at midnight). Cooldown is the punishment; once it's done, you start
-//     fresh. Fixes the "blocks me again later in the day" bug.
-//   - Sessions carry a `platform` field so the dashboard can split per-platform.
+// In-flight math challenges live in chrome.storage.session keyed by tabId, so a
+// correct answer submitted after the SW was killed still validates.
 
 importScripts('/lib/storage.js', '/lib/config.js');
 
@@ -58,7 +59,8 @@ let lastTickAt = Date.now();
 // Shape: { [platformId]: { date: 'YYYY-MM-DD', ms: number } }
 let dailyActive = {};
 
-// Per-platform block state. Shape: { [platformId]: { blockedUntil, unlockUntil } | null }
+// Per-platform block state. Shape: { [platformId]: { unlockUntil } | null }.
+// null / past unlockUntil = LOCKED (the default). A live unlockUntil = a scroll window.
 let blockState = {};
 
 // Per-tab last-sent overlay mode, so we don't spam messages each tick.
@@ -70,11 +72,16 @@ const lastOverlayState = new Map();
 let userConfig = {};
 
 function cfg() {
+  const d = self.SG_CONFIG;
   return {
-    limitMs: userConfig.limitMs ?? self.SG_CONFIG.limitMs,
-    blockCooldownMs: userConfig.blockCooldownMs ?? self.SG_CONFIG.blockCooldownMs,
-    passwordGraceMs: userConfig.passwordGraceMs ?? self.SG_CONFIG.passwordGraceMs,
-    password: userConfig.password ?? self.SG_CONFIG.password,
+    passwordEnabled: userConfig.passwordEnabled ?? d.passwordEnabled,
+    password: userConfig.password ?? d.password,
+    passwordGrantMs: userConfig.passwordGrantMs ?? d.passwordGrantMs,
+    mathEnabled: userConfig.mathEnabled ?? d.mathEnabled,
+    mathCount: userConfig.mathCount ?? d.mathCount,
+    mathDifficulty: userConfig.mathDifficulty ?? d.mathDifficulty,
+    mathGrantMs: userConfig.mathGrantMs ?? d.mathGrantMs,
+    dailyCeilingMs: userConfig.dailyCeilingMs ?? d.dailyCeilingMs,
   };
 }
 
@@ -273,41 +280,50 @@ function isActivelyViewing(tabId) {
       && st.windowId === focusedWindowId;
 }
 
+// True when the platform has already spent its daily active-scroll budget.
+// A ceiling of 0 means "no cap". Only counts today's usage.
+function ceilingReached(platform, now = Date.now()) {
+  const c = cfg();
+  if (!c.dailyCeilingMs || c.dailyCeilingMs <= 0) return false;
+  const da = dailyActive[platform];
+  if (!da || da.date !== formatLocalDate(now)) return false;
+  return da.ms >= c.dailyCeilingMs;
+}
+
 // Returns the overlay state a tab on `platform` should be in right now.
+// Default is BLOCKED — a tab is only unlocked while a live window exists.
+// Legacy `blockedUntil` fields (from the old cooldown model) are ignored.
 function evaluateOverlay(platform, now) {
   const bs = blockState[platform];
-  if (!bs || bs.blockedUntil <= now) return { mode: 'hidden' };
-  if (bs.unlockUntil && bs.unlockUntil > now) {
-    return {
-      mode: 'unlocked',
-      blockedUntil: bs.blockedUntil,
-      unlockUntil: bs.unlockUntil,
-    };
+  if (bs && bs.unlockUntil && bs.unlockUntil > now) {
+    return { mode: 'unlocked', unlockUntil: bs.unlockUntil };
   }
-  return { mode: 'blocked', blockedUntil: bs.blockedUntil };
+  return { mode: 'blocked', ceilingReached: ceilingReached(platform, now) };
 }
 
 function sendOverlay(tabId, platform, evalResult) {
-  // Tell the content script whether a password is configured. When false,
-  // the overlay swaps the unlock input for a "set up in the popup" message.
-  const passwordSet = !!cfg().password;
+  const c = cfg();
   const label = platformLabel(platform);
-  if (evalResult.mode === 'blocked') {
-    chrome.tabs.sendMessage(tabId, {
-      type: 'BLOCK',
-      platform,
-      platformLabel: label,
-      blockedUntil: evalResult.blockedUntil,
-      passwordSet,
-    }).catch(() => {});
-  } else if (evalResult.mode === 'unlocked') {
+  if (evalResult.mode === 'unlocked') {
     chrome.tabs.sendMessage(tabId, {
       type: 'UNLOCK',
       platform,
       unlockUntil: evalResult.unlockUntil,
     }).catch(() => {});
   } else {
-    chrome.tabs.sendMessage(tabId, { type: 'CLEAR', platform }).catch(() => {});
+    // Blocked (the default). Ship the challenge config so the overlay can
+    // render the password field and/or the math option without a round-trip.
+    chrome.tabs.sendMessage(tabId, {
+      type: 'BLOCK',
+      platform,
+      platformLabel: label,
+      passwordEnabled: c.passwordEnabled && !!c.password,
+      passwordSet: !!c.password,
+      mathEnabled: c.mathEnabled,
+      mathCount: c.mathCount,
+      mathDifficulty: c.mathDifficulty,
+      ceilingReached: evalResult.ceilingReached ?? ceilingReached(platform, Date.now()),
+    }).catch(() => {});
   }
 }
 
@@ -335,44 +351,49 @@ async function tick() {
 
   let blockChanged = false;
 
-  // Accumulate per in-flight session. Active time charges the platform's
-  // daily counter; passive time only logs against the session.
+  // Helper: is this platform currently inside a live scroll window?
+  const isUnlocked = (id) => {
+    const bs = blockState[id];
+    return !!(bs && bs.unlockUntil && bs.unlockUntil > now);
+  };
+
+  // Accumulate per in-flight session. Active time only charges the daily
+  // counter while the platform is UNLOCKED — time spent staring at the block
+  // overlay must not burn the daily ceiling. Passive time only logs against
+  // the session.
   for (const [tabId, session] of tabSessions) {
     const active = isActivelyViewing(tabId);
     if (elapsed > 0) {
       if (active) {
         session.activeMs += elapsed;
-        const da = dailyActive[session.platform];
-        if (da) da.ms += elapsed;
+        if (isUnlocked(session.platform)) {
+          const da = dailyActive[session.platform];
+          if (da) da.ms += elapsed;
+        }
       } else {
         session.passiveMs += elapsed;
       }
     }
   }
 
-  const c = cfg();
-
-  // Per-platform limit / expiry check.
+  // Per-platform window maintenance.
   for (const id of platformIds()) {
     const bs = blockState[id];
-    const da = dailyActive[id];
+    if (!bs || !bs.unlockUntil) continue;
 
-    // Trigger new block on limit hit.
-    if (da && da.ms >= c.limitMs && (!bs || bs.blockedUntil <= now)) {
-      blockState[id] = { blockedUntil: now + c.blockCooldownMs, unlockUntil: null };
+    // Cut the window short if the daily ceiling was hit mid-scroll.
+    if (bs.unlockUntil > now && ceilingReached(id, now)) {
+      blockState[id] = { unlockUntil: null };
       blockChanged = true;
-      console.log('[SG]', id, 'LIMIT HIT — blocked until', new Date(blockState[id].blockedUntil).toLocaleTimeString());
+      console.log('[SG]', id, 'daily ceiling reached — window cut short');
+      continue;
     }
 
-    // Expire blocks AND reset that platform's daily counter. The cooldown IS
-    // the punishment; once it ends, you start with a clean budget. Without
-    // this reset, the counter stays at the limit and re-blocks instantly the
-    // moment you open the site again later in the day.
-    if (blockState[id] && blockState[id].blockedUntil <= now) {
-      blockState[id] = null;
-      dailyActive[id] = { date: today, ms: 0 };
+    // Window expired → back to locked (default).
+    if (bs.unlockUntil <= now) {
+      blockState[id] = { unlockUntil: null };
       blockChanged = true;
-      console.log('[SG]', id, 'block expired — counter reset to 0');
+      console.log('[SG]', id, 'scroll window expired — locked');
     }
   }
 
@@ -411,6 +432,38 @@ function platformForSender(sender) {
   return null;
 }
 
+// Open a fresh scroll window on `platform` and push the unlocked overlay to the
+// tab that earned it. Grants don't stack — this always replaces the window.
+async function grantWindow(tabId, platform, grantMs) {
+  const now = Date.now();
+  blockState[platform] = { unlockUntil: now + grantMs };
+  await persistBlockState();
+  sendOverlay(tabId, platform, evaluateOverlay(platform, Date.now()));
+  lastOverlayState.set(tabId, 'unlocked');
+  console.log('[SG]', platform, 'unlocked for', Math.round(grantMs / 1000), 's');
+}
+
+// In-flight math challenges live in chrome.storage.session (survives SW death).
+// Keyed per tab so each blocked tab has its own set.
+const challengeKey = (tabId) => `mathChallenge:${tabId}`;
+
+async function saveChallenge(tabId, platform, problems) {
+  await chrome.storage.session.set({
+    [challengeKey(tabId)]: { platform, problems, createdAt: Date.now() },
+  });
+}
+async function loadChallenge(tabId) {
+  const k = challengeKey(tabId);
+  const obj = await chrome.storage.session.get(k);
+  return obj[k] ?? null;
+}
+async function clearChallenge(tabId) {
+  await chrome.storage.session.remove(challengeKey(tabId));
+}
+
+// Strip the answers before a problem set crosses into a content script.
+const publicProblems = (problems) => problems.map(({ a, b, op }) => ({ a, b, op }));
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const tabId = sender.tab?.id;
 
@@ -427,43 +480,93 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg?.type === 'TRY_UNLOCK') {
-    // Unlocks are scoped to the platform of the tab the user typed into.
+    // Password path. Scoped to the platform of the tab the user typed into.
     const platform = platformForSender(sender);
     const c = cfg();
-    const ok = !!c.password && msg.password === c.password && platform != null;
-    if (ok && tabId != null) {
-      const now = Date.now();
-      const bs = blockState[platform];
-      if (bs && bs.blockedUntil > now) {
-        bs.unlockUntil = now + c.passwordGraceMs;
-        persistBlockState().then(() => {
-          sendOverlay(tabId, platform, evaluateOverlay(platform, Date.now()));
-          lastOverlayState.set(tabId, 'unlocked');
-          sendResponse({ ok: true });
-        });
-        console.log('[SG]', platform, 'unlocked for', c.passwordGraceMs / 1000, 's');
-        return true; // async sendResponse
-      }
-      sendResponse({ ok: true });
+    if (ceilingReached(platform)) {
+      sendResponse({ ok: false, ceiling: true });
       return true;
+    }
+    const ok = c.passwordEnabled && !!c.password && msg.password === c.password && platform != null;
+    if (ok && tabId != null) {
+      grantWindow(tabId, platform, c.passwordGrantMs).then(() => sendResponse({ ok: true }));
+      return true; // async sendResponse
     }
     if (!ok) console.log('[SG] wrong password attempted on', platform);
     sendResponse({ ok });
     return true;
   }
 
+  if (msg?.type === 'REQUEST_MATH_CHALLENGE') {
+    const platform = platformForSender(sender);
+    const c = cfg();
+    if (tabId == null || platform == null || !c.mathEnabled) {
+      sendResponse({ ok: false });
+      return true;
+    }
+    if (ceilingReached(platform)) {
+      sendResponse({ ok: false, ceiling: true });
+      return true;
+    }
+    const problems = self.SG_makeMathSet(c.mathCount, c.mathDifficulty);
+    saveChallenge(tabId, platform, problems).then(() => {
+      sendResponse({ ok: true, problems: publicProblems(problems) });
+    });
+    return true; // async sendResponse
+  }
+
+  if (msg?.type === 'SUBMIT_MATH') {
+    const platform = platformForSender(sender);
+    const c = cfg();
+    if (tabId == null || platform == null) {
+      sendResponse({ ok: false });
+      return true;
+    }
+    if (ceilingReached(platform)) {
+      clearChallenge(tabId);
+      sendResponse({ ok: false, ceiling: true });
+      return true;
+    }
+    loadChallenge(tabId).then(async (stored) => {
+      // Lost the challenge (SW slept before storage.session was seeded, or a
+      // stale submit). Tell the content script to request a new set.
+      if (!stored || !Array.isArray(stored.problems) || stored.platform !== platform) {
+        sendResponse({ ok: false, expired: true });
+        return;
+      }
+      const answers = Array.isArray(msg.answers) ? msg.answers : [];
+      const problems = stored.problems;
+      let wrongCount = 0;
+      for (let i = 0; i < problems.length; i++) {
+        const a = answers[i];
+        // Blank or non-numeric counts as wrong (don't let empty match a 0-answer).
+        if (a === null || a === undefined || a === '' || Number(a) !== problems[i].answer) wrongCount++;
+      }
+      if (wrongCount === 0 && answers.length === problems.length) {
+        await clearChallenge(tabId);
+        await grantWindow(tabId, platform, c.mathGrantMs);
+        sendResponse({ ok: true });
+        return;
+      }
+      // Any wrong → regenerate a fresh set so the same problems can't be
+      // brute-forced by resubmitting.
+      const fresh = self.SG_makeMathSet(c.mathCount, c.mathDifficulty);
+      await saveChallenge(tabId, platform, fresh);
+      sendResponse({ ok: false, wrongCount, problems: publicProblems(fresh) });
+    });
+    return true; // async sendResponse
+  }
+
   if (msg?.type === 'LOCK_NOW') {
-    // Popup sends `platform`; lock just that one.
+    // Popup sends `platform`; end its scroll window now (back to locked).
     const platform = msg.platform;
     if (!platformIds().includes(platform)) {
       sendResponse({ ok: false });
       return true;
     }
-    const c = cfg();
-    const now = Date.now();
-    blockState[platform] = { blockedUntil: now + c.blockCooldownMs, unlockUntil: null };
+    blockState[platform] = { unlockUntil: null };
     persistBlockState();
-    console.log('[SG] LOCK_NOW', platform, 'until', new Date(blockState[platform].blockedUntil).toLocaleTimeString());
+    console.log('[SG] LOCK_NOW', platform);
     sendResponse({ ok: true });
     return true;
   }
@@ -518,6 +621,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     userConfig = rest;
     await SGStorage.set('userConfig', userConfig);
     console.log('[SG] migrated userConfig (removed legacy limits/contextToGroup)');
+  }
+
+  // v2→v3 userConfig migration: the time-limit model became the earn-to-scroll
+  // model. Map the old keys onto the new ones and drop the retired cooldown.
+  if (userConfig && typeof userConfig === 'object' &&
+      ('limitMs' in userConfig || 'passwordGraceMs' in userConfig || 'blockCooldownMs' in userConfig)) {
+    if ('limitMs' in userConfig && userConfig.dailyCeilingMs == null) userConfig.dailyCeilingMs = userConfig.limitMs;
+    if ('passwordGraceMs' in userConfig && userConfig.passwordGrantMs == null) userConfig.passwordGrantMs = userConfig.passwordGraceMs;
+    delete userConfig.limitMs;
+    delete userConfig.passwordGraceMs;
+    delete userConfig.blockCooldownMs;
+    await SGStorage.set('userConfig', userConfig);
+    console.log('[SG] migrated userConfig v2→v3 (limitMs→dailyCeilingMs, passwordGraceMs→passwordGrantMs)');
   }
 
   // dailyActive migration: v2 stored a single { date, ms } (Instagram only).

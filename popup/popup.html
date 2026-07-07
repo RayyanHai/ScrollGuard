@@ -15,8 +15,9 @@
     <section class="setup">
       <h1 class="setup-title">Welcome</h1>
       <p class="setup-sub">
-        Set your unlock password before you start. You'll type this on the block screen to buy a short grace window.
-        Make it memorable, but annoying enough that you have to pause and think.
+        Instagram and TikTok are blocked by default. Set an unlock password — you'll type it on the block screen to
+        earn a scroll window. Make it memorable, but annoying enough that you have to pause and think. You can also
+        earn windows by solving math problems (configurable in Settings).
       </p>
       <div class="field-stack">
         <label for="setupPw">New password</label>
@@ -50,20 +51,47 @@
         <button class="link" id="toggleSettings" aria-expanded="false">edit</button>
       </h2>
       <div id="settingsBody" hidden>
-        <div class="row">
-          <label for="lim-daily">Daily limit <span class="muted">(per platform)</span></label>
-          <span class="val" id="lim-daily-val"></span>
-          <input type="range" id="lim-daily" min="0.5" max="60" step="0.5">
+        <div class="row toggle-row">
+          <label for="pw-enabled">Password unlock</label>
+          <input type="checkbox" id="pw-enabled">
         </div>
         <div class="row">
-          <label for="cooldown">Block cooldown</label>
-          <span class="val" id="cooldown-val"></span>
-          <input type="range" id="cooldown" min="0.5" max="120" step="0.5">
+          <label for="pw-grant">Password window <span class="muted">(time earned)</span></label>
+          <span class="val" id="pw-grant-val"></span>
+          <input type="range" id="pw-grant" min="0.5" max="60" step="0.5">
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="row toggle-row">
+          <label for="math-enabled">Math unlock</label>
+          <input type="checkbox" id="math-enabled">
         </div>
         <div class="row">
-          <label for="grace">Unlock grace</label>
-          <span class="val" id="grace-val"></span>
-          <input type="range" id="grace" min="0.5" max="30" step="0.5">
+          <label for="math-grant">Math window <span class="muted">(time earned)</span></label>
+          <span class="val" id="math-grant-val"></span>
+          <input type="range" id="math-grant" min="0.5" max="60" step="0.5">
+        </div>
+        <div class="row">
+          <label for="math-count">Problems per set</label>
+          <span class="val" id="math-count-val"></span>
+          <input type="range" id="math-count" min="1" max="15" step="1">
+        </div>
+        <div class="row">
+          <label for="math-diff">Difficulty</label>
+          <select id="math-diff">
+            <option value="1">1 — Addition</option>
+            <option value="2">2 — Add &amp; subtract</option>
+            <option value="3">3 — Add, subtract, multiply</option>
+          </select>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="row">
+          <label for="ceiling">Daily ceiling <span class="muted">(per platform, 0 = off)</span></label>
+          <span class="val" id="ceiling-val"></span>
+          <input type="range" id="ceiling" min="0" max="240" step="5">
         </div>
 
         <div class="divider"></div>

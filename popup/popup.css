@@ -161,6 +161,32 @@ h2 .muted {
 }
 .row > input[type=range] { grid-area: slider; width: 100%; margin: 4px 0 0; }
 
+/* Toggle rows: label + checkbox on one line, no slider row. */
+.row.toggle-row {
+  grid-template-areas: "label value";
+  align-items: center;
+}
+.row.toggle-row > input[type=checkbox] {
+  grid-area: value;
+  justify-self: end;
+  width: 16px; height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Difficulty select sits in the value slot. */
+.row > select {
+  grid-area: value;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  cursor: pointer;
+}
+.row > select:focus { outline: none; border-color: var(--accent); }
+
 /* Stacked label + input for the password fields */
 .field-stack {
   display: flex; flex-direction: column;
