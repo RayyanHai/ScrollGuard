@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ScrollGuard — Earn a break</title><link rel="stylesheet" href="../lib/ui.css"></head>
+<body><div class="challenge-shell"><header class="topbar"><a class="brand" href="../options/options.html"><img src="../icons/icon-192.png" alt="">ScrollGuard</a><a href="../options/options.html">Back to overview</a></header>
+<main class="challenge-card"><div id="loading"><p class="muted">Getting your challenge…</p></div>
+  <section id="task" hidden><div class="eyebrow" id="site-name"></div><h1 id="task-title">Math challenge</h1><p class="muted" id="task-description"></p>
+    <details id="proposal" hidden><summary>Changes this challenge will apply</summary><div id="proposal-content"></div></details>
+    <div class="progress-line"><span id="progress-label"></span><span id="difficulty-label"></span></div><div class="meter" role="progressbar" id="progress" aria-valuemin="0" aria-valuemax="100" aria-label="Questions completed"><div id="progress-fill" class="meter-fill"></div></div>
+    <div id="problem" class="problem" aria-live="polite"></div>
+    <form id="answer-form"><label class="hint" for="answer">Your answer</label><div class="answer-row"><input id="answer" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" required autofocus><button id="submit" class="primary" type="submit">Check answer</button></div></form>
+    <p id="feedback" class="feedback" role="status" aria-live="polite"></p><p class="hint">No timer. No penalties. Your completed questions stay completed.</p>
+  </section>
+  <section id="success" class="success" hidden><div class="success-mark">✓</div><h1 id="success-title"></h1><p id="success-copy"></p><div class="actions"><button id="open-site" class="primary">Open website</button><a href="../options/options.html">Back to ScrollGuard</a></div></section>
+  <section id="failure" hidden><h1>Challenge unavailable</h1><p id="failure-copy" class="muted" style="margin:15px 0 25px"></p><a href="../options/options.html">Return to ScrollGuard →</a></section>
+</main></div><script src="../lib/config.js"></script><script src="../lib/ui.js"></script><script src="challenge.js"></script></body></html>

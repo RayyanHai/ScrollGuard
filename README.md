@@ -1,115 +1,88 @@
-<p align="center">
-  <img src="icons/icon-192.png" alt="ScrollGuard logo" width="160">
-</p>
+# ScrollGuard
 
-<h1 align="center">ScrollGuard</h1>
+ScrollGuard tracks active website use and closes a website's tabs when its daily limit is reached. Complete math problems to unlock an elapsed-clock break. **Resets Daily at 6:00 AM** in your local timezone.
 
-<p align="center">
-  A Chrome extension that tracks how long you spend on Instagram and TikTok each day and blocks you once you cross your daily limit on either. Built as a personal behavioral-intervention tool — not a polished product.
-</p>
+## Install or update
 
-<p align="center">
-  <a href="https://github.com/rayyanhai/ScrollGuard/releases/latest">
-    <img src="https://img.shields.io/github/v/release/rayyanhai/ScrollGuard?style=flat-square&label=latest" alt="Latest release">
-  </a>
-</p>
+1. Keep this repository in a stable folder.
+2. Open `chrome://extensions` and turn on **Developer mode**.
+3. Choose **Load unpacked** and select this folder (the one containing `manifest.json`).
+4. Pin ScrollGuard, open it, and choose **Manage websites**.
+5. Add a website, set its daily allowance, and grant access when Chrome asks.
 
----
-
-Whenever you hit a daily time limit (that you set) on Instagram or TikTok in the browser, the extension will take over the page with a full-screen block overlay and pause anything in the background until the cooldown (that you set) expires or you enter a password for a short grace period. Each platform has its own independent daily counter and block state — burning your Instagram budget doesn't touch TikTok and vice versa.
-
-## Screenshots
-<p align="center">
-  <img width="340" height="598" alt="Screenshot 2026-05-11 at 7 54 08 PM" src="https://github.com/user-attachments/assets/ae8a3dcd-ff83-4add-8514-f2b750c5f505" />
-</p>
-
-<p align="center">
-  <img width="1464" height="799" alt="Screenshot 2026-05-11 at 7 55 03 PM" src="https://github.com/user-attachments/assets/1404b497-83a8-4beb-bd17-d5613de72b83" />
-</p>
-
-
-## Why I built this
-
-Even when I block doomscrolling apps on my phone, I sometimes still scroll on my computer. I wanted to make my own app to address my specific needs and enhance my learning of CI/CD and JavaScript. 
-
-## What I learned
-
-- **GitHub Actions for release automation.** Wrote my first CI workflow that triggered on 'v*' tags and packages the extension and publishes a GitHub release. Small in scope, but the patterns generalize to every CI/CD platform.
-  
-- **Using Chrome Storage to survive outsmarting the blocker.** Manifest V3 service workers die after ~30 seconds of inactivity, which breaks any extension built around long-running timers. I used a single timestamp in chrome.storage.local so anytime IG is opened and it's in the block state, it just compares to the current clock. This means the block persists when IG is idle, when the browser restarts, when the entire computer restarts, and in pretty much anything. Storage outlives processes, and this is the same idea behind REST APIs, JWTs, and other distributed systems work.
-
-- **Coordinating tricky parts of the design.** I initially planned to track time across all tabs, but was confused on how to figure out which one was the real session. After some edge cases, I decided to switch and calculate time based on independent tabs and sum them up in the dashboard at read time. This design choice saved a lot of maintenance later on.
-
-- **Tracking Active Time.** I needed three separate signals to track the active amount of time spent on reels: chrome.tabs.onActivated (is it active in the window?), chrome.windows..onFocusChanged (is the window focused?), and the Page Visibility API (is the page visible as in it's not behind another window?). While I had these concerns during design, it was interesting to see how they were technically built into APIs and composed in code.
-
-- **CSS isolation on a site I don't control.** When I first tried making the overlay using regular DOM nodes, IG's CSS still leaked through. I then rebuilt a shadow DOM, which was like an isolated bubble of HTML and CSS that the page couldn't reach into.
-
-## Tech Stack
-- **JavaScript**
-- **GitHub Actions** Automated release packaging
-- **Chrome Extension Manifest V3** Service Worker + Content Scripts
-- **Shadow DOM** For the overlay
-
-## Features
-
-- **Independent per-platform tracking.** Instagram and TikTok each get their own daily counter, their own block state, and their own dashboard section. Settings (limit, cooldown, grace, password) are shared.
-- **Daily time limit per platform.** ScrollGuard counts the total time you spend actively on each site, then blocks just that platform once you cross the limit.
-- **Active vs Passive Time.** Counts only when you're actively focused on the tab (active + visible + window focused). Background tabs or minimized windows don't count.
-- **Block + cooldown with auto-reset.** When you hit the daily limit, the platform is blocked for the full cooldown duration (default 30 min). Once the cooldown expires, that platform's counter resets to 0 — the cooldown IS the punishment, not a one-shot lockout.
-- **Password.** A correct password buys you a fixed unlock window (default 5 min), then the block resumes for the rest of its cooldown. One password, both platforms.
-- **Session classification.** Each session is classified at end as a *quick check* (<60s), *browsing* (1–5 min), or *deep scroll* (>5 min) for retrospective awareness.
-- **Popup dashboard.** One section per platform with daily active time, threshold-based coloring, session count, classification breakdown, block countdowns, and Lock/Reset buttons.
-- **Edge Cases.** Any restarts, browser shutdowns, or device shutdowns fail to break the blocker. All state lives in `chrome.storage.local`.
-
-## Install
-
-Download the latest release: [Releases page](https://github.com/RayyanHai/ScrollGuard/releases/latest)
-
-1. Download `scrollguard-vX.Y.Z.zip`
-2. Unzip it somewhere stable (not your Downloads folder)
-3. Open `chrome://extensions`
-4. Enable Developer mode (top-right)
-5. Click "Load unpacked" and select the unzipped folder
-
-**First run:** click the ScrollGuard icon and you'll be prompted to set your unlock password. Choose something memorable but annoying — that's the friction layer between you and bypassing a block. You can change it later from the settings panel.
-
-> Working on the code? Skip the download and `git clone` the repo instead, then load that folder directly.
-
-## Configuration
-
-- Daily limit: Total time on Instagram per day before blocking
-- Block cooldown: How long the block stays active after a limit hit
-- Unlock grace: How much time a password unlock grants
-- Password: Phrase to bypass an active block
+For an existing installation, click **Reload** on the extension card. Reload previously open Instagram/TikTok pages to remove the old version's injected overlay. No build step or server is needed.
 
 ## How it works
 
+- Website rules are editable; Instagram and TikTok are not the only supported sites.
+- A daily allowance counts active use in the selected tab of the focused browser window. Background tabs do not multiply usage. Optional idle detection pauses the daily counter.
+- A website's allowance is shared across its tabs. Once exhausted, all matching tabs close, and new matching tabs close too.
+- After ScrollGuard closes a website, it sends a desktop notification titled **ScrollGuard**: **You've reached your time limit for [nickname]**. This also applies when an earned break expires. Notifications are enabled by default and can be disabled in Settings. Closing a tab yourself does not trigger one.
+- The popup offers **Earn a break**. A dedicated challenge page presents one question at a time and saves progress.
+- Finish the required number of questions to earn a break. There is **no challenge time limit**. A wrong answer keeps the same question and never removes progress.
+- Breaks last **1–5 minutes of elapsed clock time**. Switching away, closing the site, or restarting Chrome does not pause or renew them. Breaks cannot stack or be earned in advance.
+- At 6 AM, daily allowances, break counts, and escalation reset. Unused breaks expire. If Chrome was closed, the reset happens when the extension next runs.
+- Usage totals include active use during earned breaks. A break does not erase the original daily usage.
+
+Chrome scheduling and suspension can delay enforcement. Foreground heartbeats target approximately one-second accounting; browser events and persisted deadlines provide recovery. Sleep and long missing-heartbeat gaps are not charged as active use. A break deadline remains a wall-clock timestamp.
+
+## Simple math settings
+
+| Difficulty | Problems | Example |
+| --- | --- | --- |
+| Easy | Small-number addition | `8 + 6` |
+| Normal | Addition and subtraction | `47 − 19` |
+| Hard | Multiplication and exact division | `84 ÷ 7` |
+| Extra Hard | Two-step arithmetic | `(18 × 7) − 24` |
+
+Choose a difficulty and the number of questions. The settings screen shows one example for every level. Defaults are Normal, five questions, and a one-minute break.
+
+Optional **Repeated breaks** settings increase question count and/or difficulty after successful grants, either per website or across all websites. Wrong answers and abandoned attempts never advance escalation. Escalation is off until enabled.
+
+## Other settings
+
+- Per website: daily minutes, subdomains, limit-and-close / track-only / off, earned breaks, and math/reward overrides.
+- Breaks: 1–5 minutes per challenge; optional per-website caps on daily break count and total minutes granted. Zero means no cap.
+- Preferences: automatically reopen the website, closure notifications, toolbar status, and idle detection.
+- Settings protection: immediate edits (default), a math challenge to apply edits, or changes queued for the next 6 AM reset. Protection covers edits to existing rules and global settings, including its own setting. New website rules can be added immediately without applying pending changes early.
+- Daily history: locally stored totals for up to 90 previous usage days, each running 6 AM–6 AM. Removing and re-adding a domain retains its current-day usage.
+
+Settings-challenge completion does not award a break. Changes to rules invalidate outstanding challenges so old tasks cannot grant outdated rewards. Challenges also end at the daily reset.
+
+## Data and upgrade behavior
+
+Everything stays in `chrome.storage.local`. There is no account or backend. The extension stores domain rules, daily totals, settings, and challenge progress; it does not read page content. Additional website access is requested when that website is added. Removing Chrome's website permission pauses precise tracking and displays an **Enable access** prompt.
+
+Version 4 imports the previous Instagram/TikTok limits and math preferences. Old storage keys remain available for recovery, but old midnight-based usage is not presented as new 6 AM usage. The new daily counter starts at zero and the popup displays a migration notice. Password-based unlocks, the old overlay, and the manual daily-reset button are no longer part of the new flow.
+
+## Code map
+
+| File | Responsibility |
+| --- | --- |
+| `lib/config.js` | Defaults, four difficulty previews, website and settings validation |
+| `lib/engine.js` | Pure daily accounting, 6 AM boundaries, challenges, grants, escalation |
+| `lib/storage.js` | Whole-state persistence and legacy migration |
+| `background/service-worker.js` | Serialized browser events, tracking, tab closure, permissions, messages |
+| `content/detector.js` | Visibility and one-second foreground heartbeat on configured sites |
+| `lib/app.js`, `lib/ui.css` | Popup, overview, website manager, settings |
+| `challenge/` | Persistent question-by-question challenge screen |
+
+State uses a single `scrollguardV4` storage key. Completing a challenge and awarding its break commit in the same write. All service-worker mutations are serialized; submitting the same final answer twice cannot award two breaks. Content scripts cannot read private storage or invoke settings/challenge commands.
+
+## Verification
+
+Requires Node.js 20+ for development checks only:
+
+```sh
+npm test
+npm run check
 ```
-nav events  →  per-tab session tracking (tagged with platform)
-              ↓
-     30s chrome.alarms tick
-              ↓
-   per-platform active-time accumulator
-              ↓
-   limit check → per-platform block state
-              ↓
-   content script BLOCK / UNLOCK / CLEAR
-```
 
-- **Service worker** (`background/service-worker.js`) is the brain. Listens to `webNavigation`, `tabs`, and `windows` events; uses a `chrome.alarms` tick (every ~30s) to accumulate active time per platform and decide each platform's block state. When a platform's cooldown expires, its counter resets to 0.
-- **Content script** (`content/detector.js`, `content/intervention.js`) runs in every tracked page (Instagram, TikTok). Reports Page Visibility, renders the block overlay in a Shadow DOM with platform-aware copy, and pauses videos when blocked.
-- **Storage** (`chrome.storage.local`, wrapped in `lib/storage.js`) holds in-flight sessions, completed sessions bucketed by date, per-platform daily counters (`dailyActive[platform]`), per-platform block state (`blockState[platform]`), and user-edited config.
-- **Platforms** are declared in `lib/config.js` (`SG_PLATFORMS`). Adding another site is a matter of adding one entry there plus the host pattern in `manifest.json`.
+The dependency-free tests exercise accounting, domain matching, reset boundaries, challenge retries, duplicate submissions, tracking/focus, recovery, settings protection, and migration. GitHub Actions runs them on pushes and pull requests.
 
-## Roadmap
+An optional real-browser smoke test is in `scripts/browser-smoke.js`. It needs Playwright and its Chromium browser. It uses `.test-profile/` (a disposable test profile), intercepts the test website locally, and writes screenshots to `test-results/`. It never uses your normal Chrome profile. Set `PLAYWRIGHT_MODULE` to a bundled Playwright path if it is not installed locally; set `PLAYWRIGHT_BROWSERS_PATH` if using a custom browser cache.
 
-Some things I have planned for the future of the project given more time:
-
-- **More Platforms.** YouTube Shorts next — same scrolling pattern, same problem. The platform abstraction in `SG_PLATFORMS` makes adding sites straightforward.
-
-- **Continuous Integration.** Add unit tests for the rules engine and run them on every PR
-
-- **Dashboard data export.** Export the session log as JSON or CSV for any personal purposes.
+Tagging a release with `v*` packages the extension's runtime folders, including `challenge/`.
 
 ## License
 

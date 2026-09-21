@@ -1,705 +1,328 @@
-// ScrollGuard service worker (v3 — earn-to-scroll, per-platform).
-//
-// Model is INVERTED vs earlier versions: tracked platforms are BLOCKED by
-// default. The only way in is to pass a challenge (password or math set) that
-// grants a fixed wall-clock scroll window. Grants don't stack; each pass opens
-// a fresh window. An optional per-platform daily ceiling caps ACTIVE scroll
-// time; once hit, unlocks are refused until midnight.
-//
-// Pipeline at a glance:
-//   nav events → per-tab session tracking → 30s alarm tick →
-//   accrue active time ONLY while a platform's window is live →
-//   ceiling check (cut window short if hit) + window expiry →
-//   BLOCK/UNLOCK/CLEAR to that platform's content scripts
-//
-// State buckets (all keyed by platform id where it matters):
-//   tabSessions       in-memory (mirrored to storage as 'currentSessions')
-//                     each session has a `platform` field
-//   tabState          in-memory only (cheap to rebuild from chrome APIs)
-//   tabPlatform       in-memory: tabId → platform id (or null)
-//   dailyActive       storage: { [platform]: { date, ms } } — active scroll time used today
-//   blockState        storage: { [platform]: { unlockUntil } | null } — null/past = LOCKED
-//   lastTickAt        storage: persisted across SW restarts
-//
-// In-flight math challenges live in chrome.storage.session keyed by tabId, so a
-// correct answer submitted after the SW was killed still validates.
+'use strict';
+importScripts('/lib/config.js', '/lib/engine.js', '/lib/storage.js');
+const C = SG, E = SGEngine;
+let state;
+let tabs = new Map(), focusedWindow = null, idle = 'active', active = null;
+let access = new Set(), visible = new Map(), returnUrls = new Map();
+let expiryTimer = null, appliedRevision = -1;
 
-importScripts('/lib/storage.js', '/lib/config.js');
-
-// ---------------------------------------------------------------------------
-// In-memory state
-// ---------------------------------------------------------------------------
-
-/**
- * @typedef {Object} Session
- * @property {string} id
- * @property {number} tabId
- * @property {string} platform     - platform id ('instagram', 'tiktok', ...)
- * @property {number} startedAt
- * @property {number|null} endedAt
- * @property {number} activeMs
- * @property {number} passiveMs
- * @property {'quick_check'|'browsing'|'deep_scroll'|null} classification
- */
-
-/** @type {Map<number, Session>} tabId → in-flight session */
-const tabSessions = new Map();
-/** @type {Map<number, {windowId:number, isActiveInWindow:boolean, isVisible:boolean}>} */
-const tabState = new Map();
-/** @type {Map<number, string>} tabId → platform id (cached so we don't re-parse URL) */
-const tabPlatform = new Map();
-let focusedWindowId = null;
-
-// Wall-clock of the last tick we processed. Persisted to storage so that when
-// the SW dies and the next alarm fires, we can charge the elapsed wall time
-// to the appropriate counters (clamped to 60s — see tick()).
-let lastTickAt = Date.now();
-
-// Per-platform daily counters. Lazily ensure each platform has an entry.
-// Shape: { [platformId]: { date: 'YYYY-MM-DD', ms: number } }
-let dailyActive = {};
-
-// Per-platform block state. Shape: { [platformId]: { unlockUntil } | null }.
-// null / past unlockUntil = LOCKED (the default). A live unlockUntil = a scroll window.
-let blockState = {};
-
-// Per-tab last-sent overlay mode, so we don't spam messages each tick.
-// 'hidden' | 'blocked' | 'unlocked'
-const lastOverlayState = new Map();
-
-// User-edited config from chrome.storage.local 'userConfig'. Layered ON TOP
-// of the hardcoded SG_CONFIG defaults — anything missing falls through.
-let userConfig = {};
-
-function cfg() {
-  const d = self.SG_CONFIG;
-  return {
-    passwordEnabled: userConfig.passwordEnabled ?? d.passwordEnabled,
-    password: userConfig.password ?? d.password,
-    passwordGrantMs: userConfig.passwordGrantMs ?? d.passwordGrantMs,
-    mathEnabled: userConfig.mathEnabled ?? d.mathEnabled,
-    mathCount: userConfig.mathCount ?? d.mathCount,
-    mathDifficulty: userConfig.mathDifficulty ?? d.mathDifficulty,
-    mathGrantMs: userConfig.mathGrantMs ?? d.mathGrantMs,
-    dailyCeilingMs: userConfig.dailyCeilingMs ?? d.dailyCeilingMs,
-  };
+// Every event and UI mutation shares this queue. No concurrent read/modify/write grants.
+let queue = initialize();
+function enqueue(work) {
+  const result = queue.then(work);
+  queue = result.catch(error => console.error('[ScrollGuard]', error));
+  return result;
 }
+const siteFor = url => state.sites.find(s => C.matches(s, url));
+const trustedPage = sender => sender.id === chrome.runtime.id && sender.url?.startsWith(chrome.runtime.getURL(''));
 
-function platformIds() {
-  return self.SG_PLATFORMS.map((p) => p.id);
+async function initialize() {
+  // Challenges and configuration are private to trusted extension contexts.
+  await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+  state = await SGStorage.load(Date.now());
+  E.rollover(state, Date.now());
+  await configure();
+  await scanBrowser();
+  await enforce(Date.now());
+  await commit();
+  await chrome.alarms.create('maintenance', { periodInMinutes: .5 });
 }
-
-function platformLabel(id) {
-  return self.SG_PLATFORMS.find((p) => p.id === id)?.label ?? id;
+async function scanBrowser() {
+  tabs = new Map((await chrome.tabs.query({})).map(t => [t.id, t]));
+  const win = await chrome.windows.getLastFocused().catch(() => null);
+  focusedWindow = win?.focused ? win.id : null;
+  idle = await chrome.idle.queryState(state.settings.idleSeconds);
+  pickActive(Date.now());
 }
-
-// Local-time YYYY-MM-DD string. Used for `dailyActive[*].date` AND for the
-// `sessions:YYYY-MM-DD` storage key. Local (not UTC) because "today" should
-// mean the user's wall calendar, not a UTC day.
-function formatLocalDate(ts = Date.now()) {
-  const d = new Date(ts);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+function pickActive(now) {
+  const tab = [...tabs.values()].find(t => t.active && t.windowId === focusedWindow && !t.discarded);
+  const site = tab && siteFor(tab.url);
+  const eligible = site && site.mode !== 'off' && access.has(site.domain) && visible.get(tab.id) !== false
+    && idle !== 'locked' && !(state.settings.pauseIdle && idle === 'idle');
+  active = eligible ? { tabId: tab.id, domain: site.domain, at: now } : null;
 }
-
-function ensurePlatformBuckets() {
-  const today = formatLocalDate();
-  for (const id of platformIds()) {
-    if (!dailyActive[id]) dailyActive[id] = { date: today, ms: 0 };
-    if (!(id in blockState)) blockState[id] = null;
+function settle(now) {
+  if (active) {
+    const elapsed = now - active.at;
+    // A missing heartbeat means sleep, suspension, or a stalled page, not proven active use.
+    if (elapsed > 0 && elapsed <= 5000) E.charge(state, active.domain, active.at, now);
+    active.at = now;
+  }
+  E.rollover(state, now);
+}
+async function configure() {
+  chrome.idle.setDetectionInterval(state.settings.idleSeconds);
+  access = new Set();
+  const desired = [];
+  for (const site of state.sites) {
+    if (await chrome.permissions.contains({ origins: C.origins(site) })) {
+      access.add(site.domain);
+      if (site.mode !== 'off') desired.push({ id: `sg-${site.domain}`, matches: C.origins(site),
+        js: ['content/detector.js'], runAt: 'document_start', persistAcrossSessions: true });
+    }
+  }
+  const registered = await chrome.scripting.getRegisteredContentScripts();
+  const owned = registered.filter(s => s.id.startsWith('sg-'));
+  const same = (a, b) => a.id === b.id && JSON.stringify(a.matches) === JSON.stringify(b.matches);
+  const remove = owned.filter(s => !desired.some(d => same(s, d))).map(s => s.id);
+  const add = desired.filter(s => !owned.some(d => same(s, d)));
+  if (remove.length) await chrome.scripting.unregisterContentScripts({ ids: remove });
+  if (add.length) await chrome.scripting.registerContentScripts(add);
+  appliedRevision = state.revision;
+  // Registration covers future documents; seed already-open tabs too.
+  for (const tab of await chrome.tabs.query({})) {
+    const site = siteFor(tab.url);
+    if (site && site.mode !== 'off' && access.has(site.domain)) {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/detector.js'] }).catch(() => {});
+    }
   }
 }
-
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local') return;
-  if (changes.userConfig) {
-    userConfig = changes.userConfig.newValue ?? {};
-    console.log('[SG] userConfig updated');
+async function enforce(now) {
+  const close = [];
+  for (const tab of tabs.values()) {
+    const site = siteFor(tab.pendingUrl || tab.url);
+    if (!site || E.status(state, site, now) !== 'blocked') continue;
+    if (C.matches(site, tab.url)) returnUrls.set(site.domain, tab.url);
+    close.push({ id: tab.id, site });
   }
-});
-
-// ---------------------------------------------------------------------------
-// Session helpers
-// ---------------------------------------------------------------------------
-
-function newSession(tabId, platform, ts) {
-  return {
-    id: crypto.randomUUID(),
-    tabId,
-    platform,
-    startedAt: ts,
-    endedAt: null,
-    activeMs: 0,
-    passiveMs: 0,
-    classification: null,
-  };
+  const closedSites = new Map();
+  for (const { id, site } of close) {
+    try { await chrome.tabs.remove(id); }
+    catch { continue; }
+    closedSites.set(site.domain, site);
+    tabs.delete(id);
+    visible.delete(id);
+    if (active?.tabId === id) active = null;
+  }
+  // One notification per website in this closure batch, after at least one tab
+  // was actually closed. Later blocked visits should notify again.
+  if (state.settings.notifications) {
+    for (const site of closedSites.values()) {
+      await chrome.notifications.create({ type: 'basic', iconUrl: chrome.runtime.getURL('icons/icon-192.png'),
+        title: 'ScrollGuard', message: `You've reached your time limit for ${site.name}`,
+      }).catch(error => console.error('[ScrollGuard] Notification failed:', error.message));
+    }
+  }
 }
-
-// Classify on session end. Total wall duration only; we don't slice it up by
-// active-vs-passive here because the classification is a coarse summary for
-// the dashboard ("did I just check it or did I doomscroll?").
-function classifySession(s) {
-  const total = (s.endedAt ?? Date.now()) - s.startedAt;
-  if (total < 60_000) return 'quick_check';
-  if (total < 5 * 60_000) return 'browsing';
-  return 'deep_scroll';
-}
-
-async function persistCurrent() {
-  const obj = {};
-  for (const [tid, s] of tabSessions) obj[tid] = s;
-  await SGStorage.set('currentSessions', obj);
-  await SGStorage.set('dailyActive', dailyActive);
-  await SGStorage.set('lastTickAt', lastTickAt);
-}
-
-async function persistBlockState() {
-  await SGStorage.set('blockState', blockState);
-}
-
-async function endSession(tabId, reason) {
-  const session = tabSessions.get(tabId);
-  if (!session) return;
+async function schedule() {
+  clearTimeout(expiryTimer);
   const now = Date.now();
-  session.endedAt = now;
-  session.classification = classifySession(session);
-  console.log('[SG]', session.platform, 'session ended:', reason, '|', session.classification, '|', Math.round((session.activeMs + session.passiveMs) / 1000) + 's total');
-
-  // Bucket by the local date of when the session STARTED. This keeps a session
-  // that crossed midnight in the day it began — simpler to reason about than
-  // splitting it, and accurate enough for a daily dashboard.
-  const key = SGStorage.dateKey(session.startedAt);
-  await SGStorage.update(key, [], (arr) => { arr.push(session); return arr; });
-
-  tabSessions.delete(tabId);
-  tabState.delete(tabId);
-  tabPlatform.delete(tabId);
-  lastOverlayState.delete(tabId);
-  await persistCurrent();
+  let deadline = E.nextReset(now);
+  for (const site of state.sites) {
+    const until = E.usage(state, site.domain).breakUntil;
+    if (until > now) deadline = Math.min(deadline, until);
+  }
+  await chrome.alarms.create('deadline', { when: deadline });
+  // The alarm survives worker sleep. While awake this closes a break promptly.
+  if (deadline - now < 2 ** 31 - 1) expiryTimer = setTimeout(() => enqueue(maintenance), Math.max(0, deadline - now));
 }
-
-async function onTrackedNavigation(tabId, platform) {
+async function commit() {
+  for (const site of state.sites) E.usage(state, site.domain);
+  await SGStorage.save(state);
+  if (appliedRevision !== state.revision) await configure();
+  await schedule();
+  const tab = [...tabs.values()].find(t => t.active && t.windowId === focusedWindow);
+  const site = tab && siteFor(tab.url);
+  let label = '';
+  if (site && state.settings.badge) {
+    const kind = E.status(state, site, Date.now());
+    const u = E.usage(state, site.domain);
+    label = kind === 'blocked' ? 'STOP' : kind === 'break' ? 'BREAK' : kind === 'available'
+      ? String(Math.ceil(Math.max(0, site.limitMinutes * C.MINUTE - u.baseMs) / C.MINUTE)) : '';
+  }
+  await chrome.action.setBadgeBackgroundColor({ color: '#6558d9' });
+  await chrome.action.setBadgeText({ text: label });
+}
+async function maintenance() {
   const now = Date.now();
-  tabPlatform.set(tabId, platform);
-  const existing = tabSessions.get(tabId);
-  if (existing && existing.platform !== platform) {
-    // Tab moved between tracked platforms (rare — same tab navigates from
-    // instagram.com to tiktok.com). Close the old session before starting fresh.
-    await endSession(tabId, 'platform-switch');
-  }
-  if (!tabSessions.has(tabId)) {
-    const session = newSession(tabId, platform, now);
-    tabSessions.set(tabId, session);
-    console.log('[SG]', platform, 'session started: tab', tabId);
-    await persistCurrent();
-  }
+  settle(now);
+  // Refresh live tabs after sleep/restart; never reuse old browser focus as evidence of usage.
+  await scanBrowser();
+  await enforce(now);
+  await commit();
 }
-
-// ---------------------------------------------------------------------------
-// Navigation listeners
-// ---------------------------------------------------------------------------
-
-// Build webNavigation URL filter from configured platforms. The filter
-// supports an array of host-suffix matches; we register one per platform.
-const navFilter = {
-  url: self.SG_PLATFORMS.map((p) => ({ hostSuffix: p.hostSuffix })),
-};
-
-async function handleNav(details) {
-  if (details.frameId !== 0) return;
-  const platform = self.SG_platformForUrl(details.url);
-  if (!platform) return;
-
-  const st = tabState.get(details.tabId) ?? { isActiveInWindow: false, isVisible: false };
-  try {
-    const tab = await chrome.tabs.get(details.tabId);
-    st.windowId = tab.windowId;
-    st.isActiveInWindow = tab.active;
-  } catch {}
-  tabState.set(details.tabId, st);
-  await onTrackedNavigation(details.tabId, platform);
-
-  // Send overlay state immediately on every nav (including reloads), not on
-  // the next 30s alarm. Closes the visible gap when reloading a blocked
-  // page. The .catch swallows the case where the content script isn't ready
-  // yet — its own REQUEST_BLOCK_STATE on load is the backup path.
-  const target = evaluateOverlay(platform, Date.now());
-  sendOverlay(details.tabId, platform, target);
-  lastOverlayState.set(details.tabId, target.mode);
+function overview(now) {
+  return { day: state.day, resetAt: E.nextReset(now), settings: state.settings,
+    pending: state.pending && { settings: state.pending.settings, sites: state.pending.sites },
+    notice: state.notice, history: state.history,
+    sites: state.sites.map(site => ({ ...site, usage: E.usage(state, site.domain),
+      status: E.status(state, site, now), terms: E.terms(state, site, now), access: access.has(site.domain) })) };
 }
-
-chrome.webNavigation.onCommitted.addListener(handleNav, navFilter);
-chrome.webNavigation.onHistoryStateUpdated.addListener(handleNav, navFilter);
-
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  // 'loading' fires before the URL has fully changed in some cases, but it
-  // is the earliest reliable signal that the user is leaving the page.
-  if (changeInfo.status !== 'loading') return;
-  if (!tabSessions.has(tabId)) return;
-  if (!self.SG_platformForUrl(tab.url)) await endSession(tabId, 'navigated-away');
-});
-
-chrome.tabs.onRemoved.addListener(async (tabId) => {
-  if (tabSessions.has(tabId)) await endSession(tabId, 'tab-closed');
-  tabState.delete(tabId);
-  tabPlatform.delete(tabId);
-  lastOverlayState.delete(tabId);
-});
-
-// ---------------------------------------------------------------------------
-// Focus / visibility
-// ---------------------------------------------------------------------------
-
-chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
-  // Within a window, exactly one tab is active. Flip the flag so the previous
-  // active tab stops accumulating and the new one starts.
-  for (const [tid, st] of tabState) {
-    if (st.windowId === windowId) st.isActiveInWindow = (tid === tabId);
-  }
-});
-
-chrome.windows.onFocusChanged.addListener((windowId) => {
-  focusedWindowId = (windowId === chrome.windows.WINDOW_ID_NONE) ? null : windowId;
-});
-
-// ---------------------------------------------------------------------------
-// Block evaluation
-// ---------------------------------------------------------------------------
-
-// All three signals must agree before we count a tab as "actively viewed":
-//   - it's the active tab in its window
-//   - its document.visibilityState is 'visible' (content script tells us)
-//   - its window is the OS-focused one
-function isActivelyViewing(tabId) {
-  const st = tabState.get(tabId);
-  if (!st) return false;
-  return st.isActiveInWindow === true
-      && st.isVisible === true
-      && st.windowId === focusedWindowId;
-}
-
-// True when the platform has already spent its daily active-scroll budget.
-// A ceiling of 0 means "no cap". Only counts today's usage.
-function ceilingReached(platform, now = Date.now()) {
-  const c = cfg();
-  if (!c.dailyCeilingMs || c.dailyCeilingMs <= 0) return false;
-  const da = dailyActive[platform];
-  if (!da || da.date !== formatLocalDate(now)) return false;
-  return da.ms >= c.dailyCeilingMs;
-}
-
-// Returns the overlay state a tab on `platform` should be in right now.
-// Default is BLOCKED — a tab is only unlocked while a live window exists.
-// Legacy `blockedUntil` fields (from the old cooldown model) are ignored.
-function evaluateOverlay(platform, now) {
-  const bs = blockState[platform];
-  if (bs && bs.unlockUntil && bs.unlockUntil > now) {
-    return { mode: 'unlocked', unlockUntil: bs.unlockUntil };
-  }
-  return { mode: 'blocked', ceilingReached: ceilingReached(platform, now) };
-}
-
-function sendOverlay(tabId, platform, evalResult) {
-  const c = cfg();
-  const label = platformLabel(platform);
-  if (evalResult.mode === 'unlocked') {
-    chrome.tabs.sendMessage(tabId, {
-      type: 'UNLOCK',
-      platform,
-      unlockUntil: evalResult.unlockUntil,
-    }).catch(() => {});
-  } else {
-    // Blocked (the default). Ship the challenge config so the overlay can
-    // render the password field and/or the math option without a round-trip.
-    chrome.tabs.sendMessage(tabId, {
-      type: 'BLOCK',
-      platform,
-      platformLabel: label,
-      passwordEnabled: c.passwordEnabled && !!c.password,
-      passwordSet: !!c.password,
-      mathEnabled: c.mathEnabled,
-      mathCount: c.mathCount,
-      mathDifficulty: c.mathDifficulty,
-      ceilingReached: evalResult.ceilingReached ?? ceilingReached(platform, Date.now()),
-    }).catch(() => {});
-  }
-}
-
-// ---------------------------------------------------------------------------
-// The tick (chrome.alarms-driven, ~30s cadence)
-// ---------------------------------------------------------------------------
-
-async function tick() {
+function createChallenge(site, purpose = 'break', proposal = null) {
   const now = Date.now();
-
-  // Clamp elapsed to [0, 60_000].
-  const elapsed = Math.min(Math.max(0, now - lastTickAt), 60_000);
-  lastTickAt = now;
-
-  // Daily reset BEFORE accumulating, so the first tick of a new day starts
-  // each platform's counter at zero.
-  const today = formatLocalDate(now);
-  for (const id of platformIds()) {
-    if (!dailyActive[id]) dailyActive[id] = { date: today, ms: 0 };
-    if (dailyActive[id].date !== today) {
-      console.log('[SG]', id, 'daily reset:', dailyActive[id].date, '→', today);
-      dailyActive[id] = { date: today, ms: 0 };
-    }
-  }
-
-  let blockChanged = false;
-
-  // Helper: is this platform currently inside a live scroll window?
-  const isUnlocked = (id) => {
-    const bs = blockState[id];
-    return !!(bs && bs.unlockUntil && bs.unlockUntil > now);
-  };
-
-  // Accumulate per in-flight session. Active time only charges the daily
-  // counter while the platform is UNLOCKED — time spent staring at the block
-  // overlay must not burn the daily ceiling. Passive time only logs against
-  // the session.
-  for (const [tabId, session] of tabSessions) {
-    const active = isActivelyViewing(tabId);
-    if (elapsed > 0) {
-      if (active) {
-        session.activeMs += elapsed;
-        if (isUnlocked(session.platform)) {
-          const da = dailyActive[session.platform];
-          if (da) da.ms += elapsed;
-        }
-      } else {
-        session.passiveMs += elapsed;
-      }
-    }
-  }
-
-  // Per-platform window maintenance.
-  for (const id of platformIds()) {
-    const bs = blockState[id];
-    if (!bs || !bs.unlockUntil) continue;
-
-    // Cut the window short if the daily ceiling was hit mid-scroll.
-    if (bs.unlockUntil > now && ceilingReached(id, now)) {
-      blockState[id] = { unlockUntil: null };
-      blockChanged = true;
-      console.log('[SG]', id, 'daily ceiling reached — window cut short');
-      continue;
-    }
-
-    // Window expired → back to locked (default).
-    if (bs.unlockUntil <= now) {
-      blockState[id] = { unlockUntil: null };
-      blockChanged = true;
-      console.log('[SG]', id, 'scroll window expired — locked');
-    }
-  }
-
-  // Push overlay state to every in-flight tracked tab. Only re-send if the
-  // mode changed for that tab (or any block changed, which forces a re-send
-  // to be safe).
-  for (const [tabId, session] of tabSessions) {
-    const target = evaluateOverlay(session.platform, now);
-    const last = lastOverlayState.get(tabId);
-    if (last !== target.mode || blockChanged) {
-      sendOverlay(tabId, session.platform, target);
-      lastOverlayState.set(tabId, target.mode);
-    }
-  }
-
-  await persistCurrent();
-  if (blockChanged) await persistBlockState();
+  const key = purpose === 'settings' ? '$settings' : site.domain;
+  const existing = state.challenges[key];
+  if (purpose === 'break' && existing && !existing.done && existing.day === state.day && existing.revision === state.revision) return existing;
+  const t = purpose === 'settings'
+    ? { questions: state.settings.questions, difficulty: state.settings.difficulty, rewardMs: 0 }
+    : E.terms(state, site, now);
+  if (t.reason) throw new Error(t.reason);
+  const ch = { id: crypto.randomUUID(), site: site?.domain || null, purpose, day: state.day,
+    revision: state.revision, questions: t.questions, difficulty: t.difficulty, rewardMs: t.rewardMs,
+    completed: 0, problems: Array.from({ length: t.questions }, () => E.problem(t.difficulty)), proposal };
+  state.challenges[key] = ch;
+  return ch;
 }
-
-chrome.alarms.create('tick', { periodInMinutes: 0.5 });
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'tick') tick();
-});
-
-// ---------------------------------------------------------------------------
-// Messages from content scripts and popup
-// ---------------------------------------------------------------------------
-
-// Resolve which platform a sender belongs to. Tries the cached map first,
-// then the tab's URL as a fallback. Returns null if the sender isn't a
-// tracked tab (e.g. messages from the popup with no tab attached).
-function platformForSender(sender) {
-  const tabId = sender.tab?.id;
-  if (tabId != null && tabPlatform.has(tabId)) return tabPlatform.get(tabId);
-  if (sender.tab?.url) return self.SG_platformForUrl(sender.tab.url);
-  return null;
+async function openChallenge(ch) {
+  const url = chrome.runtime.getURL(`challenge/challenge.html?id=${encodeURIComponent(ch.id)}`);
+  const existing = (await chrome.tabs.query({})).find(t => t.url === url);
+  if (existing) { await chrome.tabs.update(existing.id, { active: true }); await chrome.windows.update(existing.windowId, { focused: true }); }
+  else await chrome.tabs.create({ url });
 }
-
-// Open a fresh scroll window on `platform` and push the unlocked overlay to the
-// tab that earned it. Grants don't stack — this always replaces the window.
-async function grantWindow(tabId, platform, grantMs) {
+function applyProposal(proposal) {
+  state.settings = proposal.settings;
+  state.sites = proposal.sites;
+  state.pending = null;
+  state.challenges = {};
+  state.revision++;
+}
+async function changeConfig(proposal) {
+  // Protection covers all edits to existing rules, so no relaxation slips through a comparison.
+  // Adding the first rules is always available; there is no current restriction to bypass.
+  const protection = state.sites.length ? state.settings.protection : 'immediate';
+  if (protection === 'next-reset') {
+    state.pending = structuredClone(proposal);
+    await commit();
+    return { message: 'Saved for the next 6 AM reset.' };
+  }
+  if (protection === 'challenge') {
+    const ch = createChallenge(null, 'settings', proposal);
+    await commit();
+    await openChallenge(ch);
+    return { message: 'Complete the math challenge to apply these changes.' };
+  }
+  applyProposal(proposal);
+  await configure();
+  pickActive(Date.now());
+  await enforce(Date.now());
+  await commit();
+  return { message: 'Saved.' };
+}
+async function dispatch(msg, sender) {
   const now = Date.now();
-  blockState[platform] = { unlockUntil: now + grantMs };
-  await persistBlockState();
-  sendOverlay(tabId, platform, evaluateOverlay(platform, Date.now()));
-  lastOverlayState.set(tabId, 'unlocked');
-  console.log('[SG]', platform, 'unlocked for', Math.round(grantMs / 1000), 's');
-}
-
-// In-flight math challenges live in chrome.storage.session (survives SW death).
-// Keyed per tab so each blocked tab has its own set.
-const challengeKey = (tabId) => `mathChallenge:${tabId}`;
-
-async function saveChallenge(tabId, platform, problems) {
-  await chrome.storage.session.set({
-    [challengeKey(tabId)]: { platform, problems, createdAt: Date.now() },
-  });
-}
-async function loadChallenge(tabId) {
-  const k = challengeKey(tabId);
-  const obj = await chrome.storage.session.get(k);
-  return obj[k] ?? null;
-}
-async function clearChallenge(tabId) {
-  await chrome.storage.session.remove(challengeKey(tabId));
-}
-
-// Strip the answers before a problem set crosses into a content script.
-const publicProblems = (problems) => problems.map(({ a, b, op }) => ({ a, b, op }));
-
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  const tabId = sender.tab?.id;
-
-  if (msg?.type === 'VISIBILITY') {
-    if (tabId == null) return;
-    const st = tabState.get(tabId) ?? {
-      windowId: sender.tab.windowId,
-      isActiveInWindow: sender.tab.active ?? false,
-    };
-    st.isVisible = !!msg.visible;
-    if (st.windowId == null) st.windowId = sender.tab.windowId;
-    tabState.set(tabId, st);
-    return;
+  settle(now);
+  if (msg.type === 'PULSE') {
+    if (sender.frameId !== 0 || !sender.tab) return {};
+    const tab = await chrome.tabs.get(sender.tab.id).catch(() => null);
+    if (!tab || !siteFor(tab.url) || !C.matches(siteFor(tab.url), sender.url)) return { tracking: false };
+    tabs.set(tab.id, tab);
+    visible.set(tab.id, msg.visible === true);
+    pickActive(now);
+    await enforce(now);
+    await commit();
+    return { tracking: siteFor(tab.url)?.mode !== 'off' };
   }
-
-  if (msg?.type === 'TRY_UNLOCK') {
-    // Password path. Scoped to the platform of the tab the user typed into.
-    const platform = platformForSender(sender);
-    const c = cfg();
-    if (ceilingReached(platform)) {
-      sendResponse({ ok: false, ceiling: true });
-      return true;
-    }
-    const ok = c.passwordEnabled && !!c.password && msg.password === c.password && platform != null;
-    if (ok && tabId != null) {
-      grantWindow(tabId, platform, c.passwordGrantMs).then(() => sendResponse({ ok: true }));
-      return true; // async sendResponse
-    }
-    if (!ok) console.log('[SG] wrong password attempted on', platform);
-    sendResponse({ ok });
-    return true;
+  if (!trustedPage(sender)) throw new Error('This action is available only inside ScrollGuard.');
+  if (msg.type === 'GET_STATE') {
+    await enforce(now);
+    await commit();
+    return overview(now);
   }
-
-  if (msg?.type === 'REQUEST_MATH_CHALLENGE') {
-    const platform = platformForSender(sender);
-    const c = cfg();
-    if (tabId == null || platform == null || !c.mathEnabled) {
-      sendResponse({ ok: false });
-      return true;
-    }
-    if (ceilingReached(platform)) {
-      sendResponse({ ok: false, ceiling: true });
-      return true;
-    }
-    const problems = self.SG_makeMathSet(c.mathCount, c.mathDifficulty);
-    saveChallenge(tabId, platform, problems).then(() => {
-      sendResponse({ ok: true, problems: publicProblems(problems) });
-    });
-    return true; // async sendResponse
+  if (msg.type === 'SAVE_SETTINGS') {
+    const proposal = state.pending || { settings: state.settings, sites: state.sites };
+    return changeConfig({ sites: proposal.sites, settings: C.settings(msg.settings) });
   }
-
-  if (msg?.type === 'SUBMIT_MATH') {
-    const platform = platformForSender(sender);
-    const c = cfg();
-    if (tabId == null || platform == null) {
-      sendResponse({ ok: false });
-      return true;
+  if (msg.type === 'SAVE_SITE') {
+    const proposal = state.pending || { settings: state.settings, sites: state.sites };
+    const site = C.site(msg.site, proposal.sites);
+    if (!await chrome.permissions.contains({ origins: C.origins(site) })) throw new Error('Allow website access to enable tracking.');
+    const existing = proposal.sites.findIndex(s => s.domain === site.domain);
+    if (existing !== -1 && !msg.editing) throw new Error('This website is already added. Edit its existing rule.');
+    const sites = proposal.sites.slice();
+    if (existing < 0) sites.push(site); else sites[existing] = site;
+    if (!state.sites.some(s => s.domain === site.domain) && existing < 0) {
+      // Adding a rule cannot weaken any existing rule. Do not apply other queued changes early.
+      state.sites.push(site);
+      if (state.pending) state.pending.sites.push(site);
+      state.revision++;
+      await configure();
+      pickActive(now);
+      await enforce(now);
+      await commit();
+      return { message: 'Website added.' };
     }
-    if (ceilingReached(platform)) {
-      clearChallenge(tabId);
-      sendResponse({ ok: false, ceiling: true });
-      return true;
-    }
-    loadChallenge(tabId).then(async (stored) => {
-      // Lost the challenge (SW slept before storage.session was seeded, or a
-      // stale submit). Tell the content script to request a new set.
-      if (!stored || !Array.isArray(stored.problems) || stored.platform !== platform) {
-        sendResponse({ ok: false, expired: true });
-        return;
+    return changeConfig({ settings: proposal.settings, sites });
+  }
+  if (msg.type === 'REMOVE_SITE') {
+    const proposal = state.pending || { settings: state.settings, sites: state.sites };
+    return changeConfig({ settings: proposal.settings, sites: proposal.sites.filter(s => s.domain !== msg.domain) });
+  }
+  if (msg.type === 'CANCEL_PENDING') { state.pending = null; await commit(); return {}; }
+  if (msg.type === 'DISMISS_NOTICE') { state.notice = null; await commit(); return {}; }
+  if (msg.type === 'REFRESH_ACCESS') { await configure(); pickActive(now); await commit(); return {}; }
+  if (msg.type === 'START_CHALLENGE') {
+    const site = state.sites.find(s => s.domain === msg.domain);
+    if (!site) throw new Error('This website was removed.');
+    if (!access.has(site.domain)) throw new Error('Restore website access before earning a break.');
+    const ch = createChallenge(site);
+    await commit();
+    await openChallenge(ch);
+    return {};
+  }
+  if (msg.type === 'GET_CHALLENGE' || msg.type === 'ANSWER') {
+    const ch = Object.values(state.challenges).find(c => c.id === msg.id);
+    if (!ch || ch.day !== state.day || ch.revision !== state.revision) throw new Error('This challenge is no longer current. Return to ScrollGuard to start again.');
+    const site = state.sites.find(s => s.domain === ch.site);
+    if (msg.type === 'GET_CHALLENGE') return { challenge: E.publicChallenge(ch), name: site?.name || 'Settings', proposal: ch.proposal };
+    if (ch.done) return { challenge: E.publicChallenge(ch), correct: true };
+    const result = E.answer(ch, msg.answer, msg.index);
+    if (result.complete) {
+      if (ch.purpose === 'settings') {
+        const publicResult = { ...E.publicChallenge(ch), done: true };
+        applyProposal(ch.proposal);
+        await configure();
+        pickActive(now);
+        await enforce(now);
+        await commit();
+        return { challenge: publicResult, correct: true };
       }
-      const answers = Array.isArray(msg.answers) ? msg.answers : [];
-      const problems = stored.problems;
-      let wrongCount = 0;
-      for (let i = 0; i < problems.length; i++) {
-        const a = answers[i];
-        // Blank or non-numeric counts as wrong (don't let empty match a 0-answer).
-        if (a === null || a === undefined || a === '' || Number(a) !== problems[i].answer) wrongCount++;
+      if (!site) throw new Error('This website was removed.');
+      E.grant(state, site, ch, now);
+      await commit(); // Persist reward and completion before opening any website.
+      if (C.effective(state, site).autoReopen) {
+        const url = returnUrls.get(site.domain);
+        await chrome.tabs.create({ url: url && C.matches(site, url) ? url : `https://${site.domain}/` }).catch(() => {});
       }
-      if (wrongCount === 0 && answers.length === problems.length) {
-        await clearChallenge(tabId);
-        await grantWindow(tabId, platform, c.mathGrantMs);
-        sendResponse({ ok: true });
-        return;
-      }
-      // Any wrong → regenerate a fresh set so the same problems can't be
-      // brute-forced by resubmitting.
-      const fresh = self.SG_makeMathSet(c.mathCount, c.mathDifficulty);
-      await saveChallenge(tabId, platform, fresh);
-      sendResponse({ ok: false, wrongCount, problems: publicProblems(fresh) });
-    });
-    return true; // async sendResponse
+    } else await commit();
+    return { ...result, challenge: E.publicChallenge(ch) };
   }
-
-  if (msg?.type === 'LOCK_NOW') {
-    // Popup sends `platform`; end its scroll window now (back to locked).
-    const platform = msg.platform;
-    if (!platformIds().includes(platform)) {
-      sendResponse({ ok: false });
-      return true;
-    }
-    blockState[platform] = { unlockUntil: null };
-    persistBlockState();
-    console.log('[SG] LOCK_NOW', platform);
-    sendResponse({ ok: true });
-    return true;
+  if (msg.type === 'OPEN_SITE') {
+    const site = state.sites.find(s => s.domain === msg.domain);
+    if (!site || E.status(state, site, now) === 'blocked') throw new Error('This website is blocked. Earn a break first.');
+    await chrome.tabs.create({ url: `https://${site.domain}/` });
+    return {};
   }
-
-  if (msg?.type === 'RESET_TODAY') {
-    // Popup sends `platform`; reset just that one (counter + block).
-    const platform = msg.platform;
-    if (!platformIds().includes(platform)) {
-      sendResponse({ ok: false });
-      return true;
-    }
-    dailyActive[platform] = { date: formatLocalDate(), ms: 0 };
-    blockState[platform] = null;
-    persistBlockState();
-    persistCurrent();
-    console.log('[SG] RESET_TODAY', platform);
-    sendResponse({ ok: true });
-    return true;
-  }
-
-  if (msg?.type === 'REQUEST_BLOCK_STATE') {
-    if (tabId == null) return;
-    const platform = platformForSender(sender);
-    if (!platform) return;
-    sendOverlay(tabId, platform, evaluateOverlay(platform, Date.now()));
-    return;
-  }
+  throw new Error('Unknown action.');
+}
+chrome.runtime.onMessage.addListener((msg, sender, respond) => {
+  if (!msg || typeof msg.type !== 'string') return;
+  enqueue(async () => {
+    // Roll back in-memory mutations if validation or persistence fails.
+    const before = structuredClone(state);
+    try { return await dispatch(msg, sender); }
+    catch (error) { state = before; throw error; }
+  }).then(data => respond({ ok: true, ...data }), error => respond({ ok: false, error: error.message }));
+  return true;
 });
-
-// ---------------------------------------------------------------------------
-// SW startup / restart recovery
-// ---------------------------------------------------------------------------
-
-(async () => {
-  // Seed which OS window is currently focused so the first tick has a chance
-  // of being correct.
-  try {
-    const win = await chrome.windows.getLastFocused();
-    focusedWindowId = win.focused ? win.id : null;
-    console.log('[SG] seeded focusedWindowId =', focusedWindowId);
-  } catch {}
-
-  // --- One-shot v1 cleanup (kept harmless if already done) ---
-  await SGStorage.remove('bucketActiveMs');
-
-  // Load persisted state.
-  userConfig = await SGStorage.get('userConfig', {});
-
-  // v1 userConfig may have a `limits` field (scroll/reels/other); strip it.
-  if (userConfig && typeof userConfig === 'object' && 'limits' in userConfig) {
-    const { limits, contextToGroup, ...rest } = userConfig;
-    userConfig = rest;
-    await SGStorage.set('userConfig', userConfig);
-    console.log('[SG] migrated userConfig (removed legacy limits/contextToGroup)');
-  }
-
-  // v2→v3 userConfig migration: the time-limit model became the earn-to-scroll
-  // model. Map the old keys onto the new ones and drop the retired cooldown.
-  if (userConfig && typeof userConfig === 'object' &&
-      ('limitMs' in userConfig || 'passwordGraceMs' in userConfig || 'blockCooldownMs' in userConfig)) {
-    if ('limitMs' in userConfig && userConfig.dailyCeilingMs == null) userConfig.dailyCeilingMs = userConfig.limitMs;
-    if ('passwordGraceMs' in userConfig && userConfig.passwordGrantMs == null) userConfig.passwordGrantMs = userConfig.passwordGraceMs;
-    delete userConfig.limitMs;
-    delete userConfig.passwordGraceMs;
-    delete userConfig.blockCooldownMs;
-    await SGStorage.set('userConfig', userConfig);
-    console.log('[SG] migrated userConfig v2→v3 (limitMs→dailyCeilingMs, passwordGraceMs→passwordGrantMs)');
-  }
-
-  // dailyActive migration: v2 stored a single { date, ms } (Instagram only).
-  // v3 stores { [platform]: { date, ms } }. Detect the old shape and migrate.
-  const rawDaily = await SGStorage.get('dailyActive', null);
-  if (rawDaily && typeof rawDaily === 'object' && typeof rawDaily.ms === 'number' && typeof rawDaily.date === 'string') {
-    console.log('[SG] migrating v2 dailyActive → per-platform shape');
-    dailyActive = { instagram: rawDaily };
-  } else if (rawDaily && typeof rawDaily === 'object') {
-    dailyActive = rawDaily;
-  } else {
-    dailyActive = {};
-  }
-
-  // blockState migration: v2 stored a single { blockedUntil, unlockUntil } | null.
-  // v3 stores { [platform]: ... | null }.
-  const rawBlock = await SGStorage.get('blockState', null);
-  if (rawBlock && typeof rawBlock === 'object' && 'blockedUntil' in rawBlock) {
-    console.log('[SG] migrating v2 blockState → per-platform shape');
-    blockState = { instagram: rawBlock };
-  } else if (rawBlock && typeof rawBlock === 'object') {
-    blockState = rawBlock;
-  } else {
-    blockState = {};
-  }
-
-  ensurePlatformBuckets();
-
-  // Normalize stale dates per platform.
-  const today = formatLocalDate();
-  for (const id of platformIds()) {
-    if (dailyActive[id].date !== today) dailyActive[id] = { date: today, ms: 0 };
-  }
-
-  // Persist the migrated shape so subsequent reads are clean.
-  await SGStorage.set('dailyActive', dailyActive);
-  await SGStorage.set('blockState', blockState);
-
-  // lastTickAt is persisted so the first post-restart tick charges the
-  // elapsed wall time (capped to 60s) rather than zero.
-  lastTickAt = await SGStorage.get('lastTickAt', Date.now());
-
-  const saved = await SGStorage.get('currentSessions', {});
-  for (const [tid, s] of Object.entries(saved)) {
-    // Older sessions may lack a `platform` field — assume Instagram.
-    if (!s.platform) s.platform = 'instagram';
-    tabSessions.set(Number(tid), s);
-    tabPlatform.set(Number(tid), s.platform);
-  }
-  if (tabSessions.size) {
-    console.log('[SG] restored', tabSessions.size, 'in-flight session(s)');
-    for (const tabId of tabSessions.keys()) {
-      try {
-        const tab = await chrome.tabs.get(tabId);
-        tabState.set(tabId, {
-          windowId: tab.windowId,
-          isActiveInWindow: tab.active,
-          isVisible: false,
-        });
-      } catch {
-        await endSession(tabId, 'tab-gone-on-restart');
-      }
-    }
-  }
-
-  chrome.alarms.create('tick', { periodInMinutes: 0.5 });
-})();
-
-console.log('[SG] service worker started');
+function browserEvent(update) {
+  enqueue(async () => { const now = Date.now(); settle(now); await update(); pickActive(now); await enforce(now); await commit(); });
+}
+chrome.tabs.onActivated.addListener(({ tabId, windowId }) => browserEvent(async () => {
+  for (const tab of tabs.values()) if (tab.windowId === windowId) tab.active = tab.id === tabId;
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (tab) tabs.set(tabId, tab);
+}));
+chrome.tabs.onUpdated.addListener((id, change, tab) => {
+  if (change.url || change.status || 'discarded' in change) browserEvent(() => { tabs.set(id, tab); if (change.url) visible.delete(id); });
+});
+chrome.tabs.onCreated.addListener(tab => browserEvent(() => tabs.set(tab.id, tab)));
+chrome.tabs.onRemoved.addListener(id => browserEvent(() => { tabs.delete(id); visible.delete(id); }));
+chrome.tabs.onAttached.addListener(() => browserEvent(scanBrowser));
+chrome.tabs.onDetached.addListener(() => browserEvent(scanBrowser));
+chrome.tabs.onReplaced.addListener(() => browserEvent(scanBrowser));
+chrome.windows.onFocusChanged.addListener(id => browserEvent(() => { focusedWindow = id === chrome.windows.WINDOW_ID_NONE ? null : id; }));
+chrome.idle.onStateChanged.addListener(value => browserEvent(() => { idle = value; }));
+chrome.alarms.onAlarm.addListener(alarm => { if (['maintenance', 'deadline'].includes(alarm.name)) enqueue(maintenance); });
+chrome.permissions.onAdded.addListener(() => browserEvent(configure));
+chrome.permissions.onRemoved.addListener(() => browserEvent(configure));
+chrome.runtime.onStartup.addListener(() => enqueue(maintenance));

@@ -16,3 +16,8 @@ package-lock.json
 dist/
 build/
 *.zip
+
+# Local browser verification artifacts
+.browser-cache/
+.test-profile/
+test-results/
