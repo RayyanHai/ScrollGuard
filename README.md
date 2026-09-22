@@ -12,6 +12,8 @@ ScrollGuard tracks active website use and closes a website's tabs when its daily
 
 For an existing installation, click **Reload** on the extension card. Reload previously open Instagram/TikTok pages to remove the old version's injected overlay. No build step or server is needed.
 
+The same installation steps apply to Chrome on macOS and Windows. Chrome 120 or later is required. This repository contains a Chrome Manifest V3 extension; it is not a native Mac app or a Safari extension. It affects websites in the browser profile where you installed it, not the TikTok desktop/mobile app or other browser profiles.
+
 ## How it works
 
 - Website rules are editable; Instagram and TikTok are not the only supported sites.
@@ -78,9 +80,17 @@ npm test
 npm run check
 ```
 
-The dependency-free tests exercise accounting, domain matching, reset boundaries, challenge retries, duplicate submissions, tracking/focus, recovery, settings protection, and migration. GitHub Actions runs them on pushes and pull requests.
+The dependency-free tests exercise accounting, domain matching, reset boundaries, challenge retries, duplicate submissions, tracking/focus, recovery after heartbeat and startup failures, settings protection, and migration. GitHub Actions runs them on Linux, macOS, and Windows on pushes and pull requests.
 
 An optional real-browser smoke test is in `scripts/browser-smoke.js`. It needs Playwright and its Chromium browser. It uses `.test-profile/` (a disposable test profile), intercepts the test website locally, and writes screenshots to `test-results/`. It never uses your normal Chrome profile. Set `PLAYWRIGHT_MODULE` to a bundled Playwright path if it is not installed locally; set `PLAYWRIGHT_BROWSERS_PATH` if using a custom browser cache.
+
+```sh
+npm install --no-save --package-lock=false playwright
+npx playwright install chromium
+node scripts/browser-smoke.js
+```
+
+Set `HEADED=1` to show the test browser window; keep it focused while the active-use timer runs. The smoke test covers active-use limits, one rejected heartbeat and recovery, native notification API calls, math challenges and saved progress, elapsed-clock break expiry, blocked revisits, a browser restart, and a simulated four-hour same-day gap. The time jump changes only the test worker's clock; it does not change your Mac/PC clock or represent a four-hour endurance run. Notifications are checked at the browser API level; operating-system banner delivery depends on system notification settings.
 
 Tagging a release with `v*` packages the extension's runtime folders, including `challenge/`.
 

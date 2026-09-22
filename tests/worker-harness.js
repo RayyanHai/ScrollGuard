@@ -11,7 +11,8 @@ async function harness(options = {}) {
   let nextTab = 100;
   const storage = structuredClone(options.storage || {});
   const currentTabs = new Map((options.tabs || []).map(t => [t.id, { windowId: 1, active: true, ...t }]));
-  const removed = [], created = [], notifications = [], logs = [], registrations = new Map(), alarms = new Map();
+  const removed = [], created = [], notifications = [], logs = [], executions = [], registrations = new Map(), alarms = new Map();
+  const attempts = { storageReads: 0, registrations: 0, permissionChecks: 0 };
   let focus = options.focus ?? 1;
   const runtime = { id: 'test-extension', getURL: p => `chrome-extension://test-extension/${p}`,
     onMessage: event(), onStartup: event() };
@@ -19,7 +20,10 @@ async function harness(options = {}) {
     runtime,
     storage: { local: {
       setAccessLevel: async () => {},
-      get: async keys => Object.fromEntries(keys.filter(k => k in storage).map(k => [k, structuredClone(storage[k])])),
+      get: async keys => {
+        if (++attempts.storageReads <= (options.failStorageReads || 0)) throw new Error('Temporary storage read failure');
+        return Object.fromEntries(keys.filter(k => k in storage).map(k => [k, structuredClone(storage[k])]));
+      },
       set: async data => Object.assign(storage, structuredClone(data)),
     } },
     tabs: {
@@ -35,10 +39,22 @@ async function harness(options = {}) {
     },
     windows: { WINDOW_ID_NONE: -1, getLastFocused: async () => ({ id: focus || 1, focused: focus != null }), update: async () => {}, onFocusChanged: event() },
     idle: { queryState: async () => 'active', setDetectionInterval: () => {}, onStateChanged: event() },
-    permissions: { contains: async () => true, onAdded: event(), onRemoved: event() },
+    permissions: { contains: async () => {
+      if (++attempts.permissionChecks <= (options.failPermissionChecks || 0)) throw new Error('Temporary permissions check failure');
+      return true;
+    }, onAdded: event(), onRemoved: event() },
     scripting: { getRegisteredContentScripts: async () => [...registrations.values()],
-      registerContentScripts: async list => list.forEach(s => registrations.set(s.id, s)),
-      unregisterContentScripts: async ({ ids }) => ids.forEach(id => registrations.delete(id)), executeScript: async () => [] },
+      registerContentScripts: async list => {
+        if (++attempts.registrations <= (options.failRegistrations || 0)) throw new Error('Temporary content registration failure');
+        list.forEach(s => registrations.set(s.id, s));
+      },
+      unregisterContentScripts: async ({ ids }) => ids.forEach(id => registrations.delete(id)),
+      executeScript: async data => {
+        executions.push(structuredClone(data));
+        if (executions.length <= (options.failExecutions || 0)) throw new Error('Temporary content injection failure');
+        return [];
+      },
+    },
     alarms: { create: async (name, spec) => alarms.set(name, spec), onAlarm: event() },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
     notifications: { create: async data => {
@@ -58,7 +74,7 @@ async function harness(options = {}) {
   function send(message, from = sender) {
     return new Promise(resolve => runtime.onMessage.listeners[0](message, from, resolve));
   }
-  return { chrome, send, flush, storage, removed, created, notifications, currentTabs, logs, alarms,
+  return { chrome, send, flush, storage, removed, created, notifications, currentTabs, logs, alarms, attempts, executions,
     now: () => now, advance: ms => { now += ms; }, setTime: value => { now = value; },
     async pulse(id, visible = true) {
       const tab = currentTabs.get(id);

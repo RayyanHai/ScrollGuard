@@ -3,20 +3,28 @@ importScripts('/lib/config.js', '/lib/engine.js', '/lib/storage.js');
 const C = SG, E = SGEngine;
 let state;
 let tabs = new Map(), focusedWindow = null, idle = 'active', active = null;
-let access = new Set(), visible = new Map(), returnUrls = new Map();
+let access = new Set(), visible = new Map(), lastPulse = new Map(), returnUrls = new Map();
 let expiryTimer = null, appliedRevision = -1;
+let initialized = false;
 
 // Every event and UI mutation shares this queue. No concurrent read/modify/write grants.
-let queue = initialize();
+const reportError = error => console.error('[ScrollGuard]', error);
+let queue = initialize().catch(reportError);
 function enqueue(work) {
-  const result = queue.then(work);
-  queue = result.catch(error => console.error('[ScrollGuard]', error));
+  const result = queue.then(async () => {
+    // A temporary startup API failure must not leave an unusable worker alive.
+    if (!initialized) await initialize();
+    return work();
+  });
+  queue = result.catch(reportError);
   return result;
 }
 const siteFor = url => state.sites.find(s => C.matches(s, url));
 const trustedPage = sender => sender.id === chrome.runtime.id && sender.url?.startsWith(chrome.runtime.getURL(''));
 
 async function initialize() {
+  // Install recovery before touching storage or registering content scripts.
+  await chrome.alarms.create('maintenance', { periodInMinutes: .5 });
   // Challenges and configuration are private to trusted extension contexts.
   await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
   state = await SGStorage.load(Date.now());
@@ -25,10 +33,12 @@ async function initialize() {
   await scanBrowser();
   await enforce(Date.now());
   await commit();
-  await chrome.alarms.create('maintenance', { periodInMinutes: .5 });
+  initialized = true;
 }
 async function scanBrowser() {
   tabs = new Map((await chrome.tabs.query({})).map(t => [t.id, t]));
+  for (const id of visible.keys()) if (!tabs.has(id)) visible.delete(id);
+  for (const id of lastPulse.keys()) if (!tabs.has(id)) lastPulse.delete(id);
   const win = await chrome.windows.getLastFocused().catch(() => null);
   focusedWindow = win?.focused ? win.id : null;
   idle = await chrome.idle.queryState(state.settings.idleSeconds);
@@ -51,6 +61,8 @@ function settle(now) {
   E.rollover(state, now);
 }
 async function configure() {
+  // Keep failed permission/registration refreshes eligible for the next retry.
+  appliedRevision = -1;
   chrome.idle.setDetectionInterval(state.settings.idleSeconds);
   access = new Set();
   const desired = [];
@@ -68,7 +80,6 @@ async function configure() {
   const add = desired.filter(s => !owned.some(d => same(s, d)));
   if (remove.length) await chrome.scripting.unregisterContentScripts({ ids: remove });
   if (add.length) await chrome.scripting.registerContentScripts(add);
-  appliedRevision = state.revision;
   // Registration covers future documents; seed already-open tabs too.
   for (const tab of await chrome.tabs.query({})) {
     const site = siteFor(tab.url);
@@ -76,6 +87,18 @@ async function configure() {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/detector.js'] }).catch(() => {});
     }
   }
+  appliedRevision = state.revision;
+}
+async function repairHeartbeat(now) {
+  const tab = [...tabs.values()].find(t => t.active && t.windowId === focusedWindow && !t.discarded);
+  const site = tab && siteFor(tab.url);
+  if (!site || site.mode === 'off' || !access.has(site.domain)) return;
+  const last = lastPulse.get(tab.id);
+  if (last != null && now >= last && now - last <= 5000) return;
+  // A lost content heartbeat must not turn a daily allowance into unlimited use.
+  // Visibility may itself be stale, so repair the selected tab regardless of its
+  // last visibility message. Failed injections are retried next maintenance.
+  await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/detector.js'] }).catch(() => {});
 }
 async function enforce(now) {
   const close = [];
@@ -92,6 +115,7 @@ async function enforce(now) {
     closedSites.set(site.domain, site);
     tabs.delete(id);
     visible.delete(id);
+    lastPulse.delete(id);
     if (active?.tabId === id) active = null;
   }
   // One notification per website in this closure batch, after at least one tab
@@ -139,6 +163,7 @@ async function maintenance() {
   // Refresh live tabs after sleep/restart; never reuse old browser focus as evidence of usage.
   await scanBrowser();
   await enforce(now);
+  await repairHeartbeat(now);
   await commit();
 }
 function overview(now) {
@@ -207,6 +232,7 @@ async function dispatch(msg, sender) {
     if (!tab || !siteFor(tab.url) || !C.matches(siteFor(tab.url), sender.url)) return { tracking: false };
     tabs.set(tab.id, tab);
     visible.set(tab.id, msg.visible === true);
+    lastPulse.set(tab.id, now);
     pickActive(now);
     await enforce(now);
     await commit();
@@ -313,10 +339,13 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) => browserEvent(async 
   if (tab) tabs.set(tabId, tab);
 }));
 chrome.tabs.onUpdated.addListener((id, change, tab) => {
-  if (change.url || change.status || 'discarded' in change) browserEvent(() => { tabs.set(id, tab); if (change.url) visible.delete(id); });
+  if (change.url || change.status || 'discarded' in change) browserEvent(() => {
+    tabs.set(id, tab);
+    if (change.url) { visible.delete(id); lastPulse.delete(id); }
+  });
 });
 chrome.tabs.onCreated.addListener(tab => browserEvent(() => tabs.set(tab.id, tab)));
-chrome.tabs.onRemoved.addListener(id => browserEvent(() => { tabs.delete(id); visible.delete(id); }));
+chrome.tabs.onRemoved.addListener(id => browserEvent(() => { tabs.delete(id); visible.delete(id); lastPulse.delete(id); }));
 chrome.tabs.onAttached.addListener(() => browserEvent(scanBrowser));
 chrome.tabs.onDetached.addListener(() => browserEvent(scanBrowser));
 chrome.tabs.onReplaced.addListener(() => browserEvent(scanBrowser));
