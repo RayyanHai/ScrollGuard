@@ -26,7 +26,10 @@ const E = require('../lib/engine.js');
   const launch = async wakeUrl => {
     context = await chromium.launchPersistentContext(profile, {
       headless: process.env.HEADED !== '1', channel: 'chromium', viewport: { width: 1280, height: 1000 },
-      args: [`--disable-extensions-except=${extensionRoot}`, `--load-extension=${extensionRoot}`],
+      // Extension-created tabs can start navigating before Playwright attaches
+      // its route. Prevent that race from loading the live website or its CDN.
+      args: [`--disable-extensions-except=${extensionRoot}`, `--load-extension=${extensionRoot}`,
+        '--host-resolver-rules=MAP * ~NOTFOUND', '--no-proxy-server'],
     });
     context.setDefaultTimeout(15000);
     context.on('page', page => page.on('pageerror', error => errors.push({ url: page.url(), message: error.message, stack: error.stack })));
@@ -100,6 +103,7 @@ const E = require('../lib/engine.js');
     const social = await context.newPage();
     const closed = social.waitForEvent('close', { timeout: 20000 });
     await social.goto('https://www.tiktok.com/').catch(() => {});
+    assert.equal(await social.title(), 'Tracked fixture');
     await social.bringToFront().catch(() => {});
     // Reject exactly one heartbeat in the extension's actual isolated world.
     // A transient transport error must not disable the content script forever.
