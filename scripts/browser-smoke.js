@@ -29,7 +29,7 @@ const E = require('../lib/engine.js');
       args: [`--disable-extensions-except=${extensionRoot}`, `--load-extension=${extensionRoot}`],
     });
     context.setDefaultTimeout(15000);
-    context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
+    context.on('page', page => page.on('pageerror', error => errors.push({ url: page.url(), message: error.message, stack: error.stack })));
     await context.route(/^https:\/\/(?:www\.)?tiktok\.com\//, route => route.fulfill({
       contentType: 'text/html', body: '<!doctype html><title>Tracked fixture</title><h1>Tracked test website</h1>',
     }));
