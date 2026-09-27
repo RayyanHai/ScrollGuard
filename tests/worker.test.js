@@ -145,6 +145,34 @@ test('closure notifications use the nickname, follow tab closure, and group matc
   assert.equal(h.notifications[1].message, "You've reached your time limit for My videos");
 });
 
+test('clicking a closure notification opens the home hub and dismisses the notification', async () => {
+  const h = await harness({ now, storage: { scrollguardV4: stateWith(0) },
+    tabs: [{ id: 1, url: 'https://example.com' }] });
+  assert.equal(h.notifications.length, 1);
+  h.chrome.notifications.onClicked.emit('notification-1'); await h.flush();
+  assert.equal(h.created.length, 1);
+  assert.equal(h.created[0].url, h.chrome.runtime.getURL('options/options.html#overview'));
+  assert.equal(h.created[0].active, true);
+  assert.deepEqual(h.focusedWindows, [h.created[0].windowId]);
+  assert.deepEqual(h.clearedNotifications, ['notification-1']);
+  assert.equal(h.read().usage['example.com'].breaks, 0);
+});
+
+test('notification clicks after worker restart reuse the hub and return it to overview', async () => {
+  const h = await harness({ now, storage: { scrollguardV4: stateWith(0) }, tabs: [
+    { id: 5, windowId: 2, active: false, url: 'chrome-extension://test-extension/options/options.html#settings' },
+  ] });
+  // The notification can outlive its originating service worker.
+  h.chrome.notifications.onClicked.emit('earlier-notification');
+  h.chrome.notifications.onClicked.emit('another-notification');
+  await h.flush();
+  assert.equal(h.created.length, 0);
+  assert.equal(h.currentTabs.get(5).url, h.chrome.runtime.getURL('options/options.html#overview'));
+  assert.equal(h.currentTabs.get(5).active, true);
+  assert.deepEqual(h.focusedWindows, [2, 2]);
+  assert.deepEqual(h.clearedNotifications, ['earlier-notification', 'another-notification']);
+});
+
 test('an expired earned break notifies when the website closes', async () => {
   const state = stateWith(0);
   state.sites[0].name = 'TikTok';
@@ -171,6 +199,59 @@ test('users can disable closure notifications without disabling tab closure', as
   const h = await harness({ now, storage: { scrollguardV4: state }, tabs: [{ id: 1, url: 'https://example.com' }] });
   assert.deepEqual(h.removed, [1]);
   assert.equal(h.notifications.length, 0);
+  assert.equal(h.created.length, 0);
+  assert.equal((await h.send({ type: 'GET_STATE' })).limitNotice, null);
+});
+
+for (const failure of [{ notificationPermission: 'denied' }, { failNotifications: true }]) {
+  test(`notification failure opens one overview with a persistent explanation: ${JSON.stringify(failure)}`, async () => {
+    const state = stateWith(0);
+    state.sites.push(C.site({ domain: 'other.test', name: 'Other', limitMinutes: 0 }));
+    const h = await harness({ now, storage: { scrollguardV4: state }, ...failure, tabs: [
+      { id: 1, url: 'https://example.com' }, { id: 2, url: 'https://other.test', active: false },
+    ] });
+    assert.deepEqual(h.removed, [1, 2]);
+    assert.equal(h.notifications.length, 0);
+    assert.equal(h.created.length, 1);
+    assert.equal(h.created[0].url, h.chrome.runtime.getURL('options/options.html#overview'));
+    assert.deepEqual(h.focusedWindows, [1]);
+    const restored = await harness({ now, storage: h.storage });
+    assert.match((await restored.send({ type: 'GET_STATE' })).limitNotice, /time limit for example.com, Other/);
+    await restored.send({ type: 'DISMISS_LIMIT_NOTICE' });
+    assert.equal((await restored.send({ type: 'GET_STATE' })).limitNotice, null);
+  });
+}
+
+test('failed break-expiry notification reuses an existing overview and expires at reset', async () => {
+  const state = stateWith(0);
+  E.usage(state, 'example.com').breakUntil = now + 1000;
+  const h = await harness({ now, storage: { scrollguardV4: state }, failNotifications: true, tabs: [
+    { id: 1, url: 'https://example.com' },
+    { id: 2, windowId: 3, active: false, url: 'chrome-extension://test-extension/options/options.html#settings' },
+  ] });
+  h.advance(1001); h.chrome.alarms.onAlarm.emit({ name: 'deadline' }); await h.flush();
+  assert.equal(h.created.length, 0);
+  assert.match(h.currentTabs.get(2).url, /#overview$/);
+  assert.deepEqual(h.focusedWindows, [3]);
+  assert.match((await h.send({ type: 'GET_STATE' })).limitNotice, /time limit/);
+  h.setTime(E.nextReset(now));
+  assert.equal((await h.send({ type: 'GET_STATE' })).limitNotice, null);
+});
+
+test('notification preview is trusted, does not change preferences, and reports permission failures', async () => {
+  const state = stateWith(); state.settings.notifications = false;
+  const h = await harness({ now, storage: { scrollguardV4: state } });
+  const untrusted = { id: 'test-extension', url: 'https://example.com', tab: { id: 1 }, frameId: 0 };
+  assert.equal((await h.send({ type: 'TEST_NOTIFICATION' }, untrusted)).ok, false);
+  assert.equal(h.notifications.length, 0);
+  assert.match((await h.send({ type: 'TEST_NOTIFICATION' })).message, /Test sent/);
+  assert.equal(h.notifications.length, 1);
+  assert.equal(h.read().settings.notifications, false);
+  assert.equal(h.created.length, 0);
+  const denied = await harness({ now, notificationPermission: 'denied' });
+  const response = await denied.send({ type: 'TEST_NOTIFICATION' });
+  assert.equal(response.ok, false);
+  assert.match(response.error, /notifications are disabled/);
 });
 
 test('existing installs enable closure notifications once and later preferences survive reload', async () => {

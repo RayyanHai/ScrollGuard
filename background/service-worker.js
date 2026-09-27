@@ -121,12 +121,37 @@ async function enforce(now) {
   // One notification per website in this closure batch, after at least one tab
   // was actually closed. Later blocked visits should notify again.
   if (state.settings.notifications) {
+    const missed = [];
     for (const site of closedSites.values()) {
-      await chrome.notifications.create({ type: 'basic', iconUrl: chrome.runtime.getURL('icons/icon-192.png'),
-        title: 'ScrollGuard', message: `You've reached your time limit for ${site.name}`,
-      }).catch(error => console.error('[ScrollGuard] Notification failed:', error.message));
+      try { await sendNotification(`You've reached your time limit for ${site.name}`); }
+      catch (error) {
+        console.error('[ScrollGuard] Notification failed:', error.message);
+        missed.push(site.name);
+      }
+    }
+    if (missed.length) {
+      state.limitNotice = { day: state.day, message: `You've reached your time limit for ${missed.join(', ')}. The website tabs were closed.` };
+      // Save the explanation even if opening a browser tab also fails.
+      await SGStorage.save(state);
+      await openOverview().catch(reportError);
     }
   }
+}
+async function sendNotification(message) {
+  if (await chrome.notifications.getPermissionLevel() !== 'granted') {
+    throw new Error('Chrome notifications are disabled. Enable notifications for your browser in system settings.');
+  }
+  return chrome.notifications.create({ type: 'basic', iconUrl: chrome.runtime.getURL('icons/icon-192.png'),
+    title: 'ScrollGuard', message });
+}
+async function openOverview() {
+  const page = chrome.runtime.getURL('options/options.html');
+  const url = `${page}#overview`;
+  const existing = (await chrome.tabs.query({})).find(tab => tab.url?.split('#')[0] === page);
+  const tab = existing
+    ? await chrome.tabs.update(existing.id, { url, active: true })
+    : await chrome.tabs.create({ url, active: true });
+  await chrome.windows.update(tab.windowId, { focused: true });
 }
 async function schedule() {
   clearTimeout(expiryTimer);
@@ -170,6 +195,7 @@ function overview(now) {
   return { day: state.day, resetAt: E.nextReset(now), settings: state.settings,
     pending: state.pending && { settings: state.pending.settings, sites: state.pending.sites },
     notice: state.notice, history: state.history,
+    limitNotice: state.limitNotice?.day === state.day ? state.limitNotice.message : null,
     sites: state.sites.map(site => ({ ...site, usage: E.usage(state, site.domain),
       status: E.status(state, site, now), terms: E.terms(state, site, now), access: access.has(site.domain) })) };
 }
@@ -239,6 +265,11 @@ async function dispatch(msg, sender) {
     return { tracking: siteFor(tab.url)?.mode !== 'off' };
   }
   if (!trustedPage(sender)) throw new Error('This action is available only inside ScrollGuard.');
+  if (msg.type === 'TEST_NOTIFICATION') {
+    await sendNotification('Time-limit notifications are ready. Click this notification to open your activity overview.');
+    return { message: 'Test sent. If no banner appears, check your system notification settings and Focus / Do not disturb.' };
+  }
+  if (msg.type === 'DISMISS_LIMIT_NOTICE') { state.limitNotice = null; await commit(); return {}; }
   if (msg.type === 'GET_STATE') {
     await enforce(now);
     await commit();
@@ -355,3 +386,7 @@ chrome.alarms.onAlarm.addListener(alarm => { if (['maintenance', 'deadline'].inc
 chrome.permissions.onAdded.addListener(() => browserEvent(configure));
 chrome.permissions.onRemoved.addListener(() => browserEvent(configure));
 chrome.runtime.onStartup.addListener(() => enqueue(maintenance));
+chrome.notifications.onClicked.addListener(notificationId => enqueue(async () => {
+  await openOverview();
+  await chrome.notifications.clear(notificationId);
+}));

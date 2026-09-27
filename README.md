@@ -4,6 +4,8 @@ ScrollGuard tracks active website use and closes a website's tabs when its daily
 
 ## Install or update
 
+Download the **Windows** or **macOS** ZIP from the [latest release](https://github.com/RayyanHai/ScrollGuard/releases/latest), extract it, and follow the included `INSTALL.md`. Both downloads contain the same Chrome extension with setup instructions for their platform. Source installations can use the steps below.
+
 1. Keep this repository in a stable folder.
 2. Open `chrome://extensions` and turn on **Developer mode**.
 3. Choose **Load unpacked** and select this folder (the one containing `manifest.json`).
@@ -11,6 +13,8 @@ ScrollGuard tracks active website use and closes a website's tabs when its daily
 5. Add a website, set its daily allowance, and grant access when Chrome asks.
 
 For an existing installation, click **Reload** on the extension card. Reload previously open Instagram/TikTok pages to remove the old version's injected overlay. No build step or server is needed.
+
+When updating from a release ZIP, replace the files in your existing installation folder before reloading. Keep the same folder and Chrome profile; do not uninstall the extension first, because that removes its locally stored data.
 
 The same installation steps apply to Chrome on macOS and Windows. Chrome 120 or later is required. This repository contains a Chrome Manifest V3 extension; it is not a native Mac app or a Safari extension. It affects websites in the browser profile where you installed it, not the TikTok desktop/mobile app or other browser profiles.
 
@@ -20,6 +24,8 @@ The same installation steps apply to Chrome on macOS and Windows. Chrome 120 or 
 - A daily allowance counts active use in the selected tab of the focused browser window. Background tabs do not multiply usage. Optional idle detection pauses the daily counter.
 - A website's allowance is shared across its tabs. Once exhausted, all matching tabs close, and new matching tabs close too.
 - After ScrollGuard closes a website, it sends a desktop notification titled **ScrollGuard**: **You've reached your time limit for [nickname]**. This also applies when an earned break expires. Notifications are enabled by default and can be disabled in Settings. Closing a tab yourself does not trigger one.
+- Click a closure notification to open the **Activity overview** home hub. If the hub is already open, ScrollGuard brings its tab and window forward and returns it to Overview.
+- If Chrome denies or fails to send a notification, ScrollGuard opens the overview with a persistent, dismissible time-limit alert. Settings includes **Test notification**. OS Focus / Do not disturb can still silence a successfully sent banner; enable Chrome notifications using the [Windows guide](docs/INSTALL-windows.md) or [macOS guide](docs/INSTALL-macos.md).
 - The popup offers **Earn a break**. A dedicated challenge page presents one question at a time and saves progress.
 - Finish the required number of questions to earn a break. There is **no challenge time limit**. A wrong answer keeps the same question and never removes progress.
 - Breaks last **1–5 minutes of elapsed clock time**. Switching away, closing the site, or restarting Chrome does not pause or renew them. Breaks cannot stack or be earned in advance.
@@ -92,7 +98,7 @@ node scripts/browser-smoke.js
 
 Set `HEADED=1` to show the test browser window; keep it focused while the active-use timer runs. The smoke test covers active-use limits, one rejected heartbeat and recovery, native notification API calls, math challenges and saved progress, elapsed-clock break expiry, blocked revisits, a browser restart, and a simulated four-hour same-day gap. The time jump changes only the test worker's clock; it does not change your Mac/PC clock or represent a four-hour endurance run. Notifications are checked at the browser API level; operating-system banner delivery depends on system notification settings.
 
-Tagging a release with `v*` packages the extension's runtime folders, including `challenge/`.
+`python scripts/package-release.py` builds and verifies separate Windows and macOS ZIPs in `dist/`, including `challenge/`, an OS-specific `INSTALL.md`, and SHA-256 checksums. Python 3 is needed only for packaging. Tagging `v<manifest version>` runs the cross-platform checks and real packaged-extension browser tests before publishing both downloads in one GitHub release.
 
 ## License
 

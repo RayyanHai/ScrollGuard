@@ -10,6 +10,7 @@ for (const dir of ['background', 'content', 'lib', 'challenge', 'scripts', 'test
   }
 }
 const manifest = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
+if (manifest.version !== JSON.parse(fs.readFileSync('package.json', 'utf8')).version) throw new Error('Manifest and package versions differ.');
 for (const file of [manifest.background.service_worker, manifest.action.default_popup, manifest.options_page]) {
   if (!fs.existsSync(file)) throw new Error(`Missing manifest file: ${file}`);
 }

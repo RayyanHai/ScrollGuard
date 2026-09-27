@@ -12,6 +12,7 @@ async function harness(options = {}) {
   const storage = structuredClone(options.storage || {});
   const currentTabs = new Map((options.tabs || []).map(t => [t.id, { windowId: 1, active: true, ...t }]));
   const removed = [], created = [], notifications = [], logs = [], executions = [], registrations = new Map(), alarms = new Map();
+  const clearedNotifications = [], focusedWindows = [];
   const attempts = { storageReads: 0, registrations: 0, permissionChecks: 0 };
   let focus = options.focus ?? 1;
   const runtime = { id: 'test-extension', getURL: p => `chrome-extension://test-extension/${p}`,
@@ -37,7 +38,8 @@ async function harness(options = {}) {
       update: async (id, data) => Object.assign(currentTabs.get(id), data),
       onActivated: event(), onUpdated: event(), onCreated: event(), onRemoved: event(), onAttached: event(), onDetached: event(), onReplaced: event(),
     },
-    windows: { WINDOW_ID_NONE: -1, getLastFocused: async () => ({ id: focus || 1, focused: focus != null }), update: async () => {}, onFocusChanged: event() },
+    windows: { WINDOW_ID_NONE: -1, getLastFocused: async () => ({ id: focus || 1, focused: focus != null }),
+      update: async (id, data) => { if (data.focused) focusedWindows.push(id); }, onFocusChanged: event() },
     idle: { queryState: async () => 'active', setDetectionInterval: () => {}, onStateChanged: event() },
     permissions: { contains: async () => {
       if (++attempts.permissionChecks <= (options.failPermissionChecks || 0)) throw new Error('Temporary permissions check failure');
@@ -57,10 +59,11 @@ async function harness(options = {}) {
     },
     alarms: { create: async (name, spec) => alarms.set(name, spec), onAlarm: event() },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
-    notifications: { create: async data => {
+    notifications: { getPermissionLevel: async () => options.notificationPermission || 'granted', create: async data => {
+      if (options.failNotifications) throw new Error('Notification service unavailable');
       notifications.push({ ...data, closedTabIds: removed.slice() });
       return `notification-${notifications.length}`;
-    } },
+    }, clear: async id => { clearedNotifications.push(id); return true; }, onClicked: event() },
   };
   class ClockDate extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
   const context = vm.createContext({ chrome, Date: ClockDate, URL, structuredClone, crypto,
@@ -75,6 +78,7 @@ async function harness(options = {}) {
     return new Promise(resolve => runtime.onMessage.listeners[0](message, from, resolve));
   }
   return { chrome, send, flush, storage, removed, created, notifications, currentTabs, logs, alarms, attempts, executions,
+    clearedNotifications, focusedWindows,
     now: () => now, advance: ms => { now += ms; }, setTime: value => { now = value; },
     async pulse(id, visible = true) {
       const tab = currentTabs.get(id);

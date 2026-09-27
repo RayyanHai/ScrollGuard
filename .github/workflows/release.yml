@@ -2,49 +2,34 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
+
+permissions:
+  contents: read
 
 jobs:
+  verify:
+    uses: ./.github/workflows/test.yml
+
   release:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: 22
-
-      - name: Verify extension
-        run: |
-          npm test
-          npm run check
-
-      - name: Get version
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-
-      - name: Package extension
-        run: |
-          zip -r scrollguard-${{ steps.version.outputs.version }}.zip \
-            manifest.json \
-            background/ \
-            content/ \
-            challenge/ \
-            dashboard/ \
-            icons/ \
-            lib/ \
-            options/ \
-            popup/
-
-      - name: Create Release
+          python-version: '3.12'
+      - name: Package Windows and macOS downloads
+        run: python scripts/package-release.py
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: scrollguard-${{ steps.version.outputs.version }}.zip
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: ScrollGuard ${{ github.ref_name }} — Windows and macOS
+          body_path: docs/RELEASE-${{ github.ref_name }}.md
+          fail_on_unmatched_files: true
+          files: |
+            dist/scrollguard-${{ github.ref_name }}-windows.zip
+            dist/scrollguard-${{ github.ref_name }}-macos.zip
+            dist/SHA256SUMS.txt
