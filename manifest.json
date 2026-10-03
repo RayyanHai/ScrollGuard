@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ScrollGuard",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "minimum_chrome_version": "120",
   "description": "Track website time, close tabs at your daily limit, and earn short breaks with math. Resets at 6 AM.",
   "permissions": ["storage", "tabs", "alarms", "scripting", "idle", "notifications"],

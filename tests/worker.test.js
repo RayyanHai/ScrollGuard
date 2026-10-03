@@ -40,6 +40,51 @@ test('focus changes stop daily usage and long sleep gaps are not charged', async
   h.advance(1000); await h.pulse(1);
   assert.equal(h.read().usage['example.com'].baseMs, 2000);
 });
+
+test('Shorts accounting follows same-tab navigation and never closes ordinary YouTube pages', async () => {
+  const state = E.fresh(now);
+  state.sites = [C.site({ domain: 'youtube.com/shorts', limitMinutes: .05 })];
+  const h = await harness({ now, storage: { scrollguardV4: state }, tabs: [
+    { id: 1, url: 'https://www.youtube.com/watch?v=regular', active: true },
+    { id: 2, url: 'https://www.youtube.com/watch?v=other', active: false },
+    { id: 3, url: 'https://m.youtube.com/shorts/another', active: false },
+  ] });
+  assert.ok(h.executions.some(e => e.target.tabId === 1), 'Existing non-Shorts pages need a detector for later navigation');
+  for (let i = 0; i < 3; i++) {
+    h.advance(1000);
+    assert.equal((await h.pulse(1)).tracking, true, 'The detector must stay alive outside Shorts');
+  }
+  assert.equal(h.read().usage['youtube.com'].baseMs, 0);
+  const navigate = async url => {
+    const tab = h.currentTabs.get(1);
+    tab.url = url;
+    h.chrome.tabs.onUpdated.emit(1, { url }, tab);
+    await h.flush();
+  };
+  await navigate('https://www.youtube.com/shorts/abc');
+  h.advance(1000); await h.pulse(1);
+  assert.equal(h.read().usage['youtube.com'].baseMs, 1000);
+  await navigate('https://www.youtube.com/watch?v=regular');
+  h.advance(1000); await h.pulse(1);
+  assert.equal(h.read().usage['youtube.com'].baseMs, 1000);
+  await navigate('https://www.youtube.com/shorts/def');
+  for (let i = 0; i < 2; i++) { h.advance(1000); await h.pulse(1); }
+  assert.deepEqual(h.removed.sort(), [1, 3]);
+  assert.ok(h.currentTabs.has(2), 'Regular YouTube video must remain open');
+});
+
+test('Shorts break links and automatic reopening use Shorts after a worker restart', async () => {
+  const state = E.fresh(now);
+  state.sites = [C.site({ domain: 'youtube.com', scope: 'shorts', limitMinutes: 0 })];
+  state.settings.questions = 1;
+  const h = await harness({ now, storage: { scrollguardV4: state } });
+  await h.send({ type: 'START_CHALLENGE', domain: 'youtube.com' });
+  await solve(h, h.read().challenges['youtube.com'].id);
+  assert.equal(h.created.at(-1).url, 'https://youtube.com/shorts');
+  const restarted = await harness({ now: now + 1000, storage: h.storage });
+  assert.equal((await restarted.send({ type: 'OPEN_SITE', domain: 'youtube.com' })).ok, true);
+  assert.equal(restarted.created.at(-1).url, 'https://youtube.com/shorts');
+});
 test('concurrent final answers grant once, and break expiry blocks after restart', async () => {
   const state = stateWith(0); state.settings.questions = 1;
   const h = await harness({ now, storage: { scrollguardV4: state } });

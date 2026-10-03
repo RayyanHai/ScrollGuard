@@ -82,7 +82,9 @@ async function configure() {
   if (add.length) await chrome.scripting.registerContentScripts(add);
   // Registration covers future documents; seed already-open tabs too.
   for (const tab of await chrome.tabs.query({})) {
-    const site = siteFor(tab.url);
+    // Seed all pages on a configured host so SPA navigation into Shorts has
+    // a heartbeat ready, even when the initial page is outside the rule.
+    const site = state.sites.find(s => C.matchesHost(s, tab.url));
     if (site && site.mode !== 'off' && access.has(site.domain)) {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/detector.js'] }).catch(() => {});
     }
@@ -255,14 +257,17 @@ async function dispatch(msg, sender) {
   if (msg.type === 'PULSE') {
     if (sender.frameId !== 0 || !sender.tab) return {};
     const tab = await chrome.tabs.get(sender.tab.id).catch(() => null);
-    if (!tab || !siteFor(tab.url) || !C.matches(siteFor(tab.url), sender.url)) return { tracking: false };
+    const site = tab && state.sites.find(s => C.matchesHost(s, tab.url));
+    if (!site || !C.matchesHost(site, sender.url)) return { tracking: false };
     tabs.set(tab.id, tab);
     visible.set(tab.id, msg.visible === true);
     lastPulse.set(tab.id, now);
     pickActive(now);
     await enforce(now);
     await commit();
-    return { tracking: siteFor(tab.url)?.mode !== 'off' };
+    // Keep the detector alive on ordinary YouTube pages for navigation into
+    // Shorts. pickActive and enforce still match the rule's path restriction.
+    return { tracking: site.mode !== 'off' && access.has(site.domain) };
   }
   if (!trustedPage(sender)) throw new Error('This action is available only inside ScrollGuard.');
   if (msg.type === 'TEST_NOTIFICATION') {
@@ -338,7 +343,7 @@ async function dispatch(msg, sender) {
       await commit(); // Persist reward and completion before opening any website.
       if (C.effective(state, site).autoReopen) {
         const url = returnUrls.get(site.domain);
-        await chrome.tabs.create({ url: url && C.matches(site, url) ? url : `https://${site.domain}/` }).catch(() => {});
+        await chrome.tabs.create({ url: url && C.matches(site, url) ? url : C.homeUrl(site) }).catch(() => {});
       }
     } else await commit();
     return { ...result, challenge: E.publicChallenge(ch) };
@@ -346,7 +351,7 @@ async function dispatch(msg, sender) {
   if (msg.type === 'OPEN_SITE') {
     const site = state.sites.find(s => s.domain === msg.domain);
     if (!site || E.status(state, site, now) === 'blocked') throw new Error('This website is blocked. Earn a break first.');
-    await chrome.tabs.create({ url: `https://${site.domain}/` });
+    await chrome.tabs.create({ url: C.homeUrl(site) });
     return {};
   }
   throw new Error('Unknown action.');

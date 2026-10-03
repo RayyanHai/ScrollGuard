@@ -62,6 +62,10 @@ const E = require('../lib/engine.js');
     const base = `chrome-extension://${id}`;
     await worker.evaluate(async () => { await queue; });
     await worker.evaluate(async data => { state = data; await configure(); await scanBrowser(); await commit(); }, E.fresh(Date.now()));
+    fs.mkdirSync(path.join(root, 'test-results'), { recursive: true });
+    const page = await context.newPage();
+    await page.goto(`${base}/options/options.html#sites`);
+    await require('./browser-shorts.js')({ context, worker, page, root, id });
     // Record successful native notification API calls without replacing delivery.
     await worker.evaluate(() => {
       globalThis.__notificationEvents = [];
@@ -75,8 +79,6 @@ const E = require('../lib/engine.js');
         return id;
       };
     });
-    const page = await context.newPage();
-    await page.goto(`${base}/options/options.html#sites`);
     await page.getByRole('button', { name: '+ Add website', exact: true }).filter({ visible: true }).click();
     await page.locator('#site-domain').fill('tiktok.com');
     await page.locator('#site-name').fill('TikTok');

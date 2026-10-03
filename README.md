@@ -21,6 +21,7 @@ The same installation steps apply to Chrome on macOS and Windows. Chrome 120 or 
 ## How it works
 
 - Website rules are editable; Instagram and TikTok are not the only supported sites.
+- For YouTube Shorts, enter `youtube.com/shorts` or choose **YouTube Shorts only** when adding `youtube.com`. Only `/shorts` pages count toward this rule and close at the limit; regular YouTube videos remain available. Navigating between regular videos and Shorts in the same tab updates tracking automatically.
 - A daily allowance counts active use in the selected tab of the focused browser window. Background tabs do not multiply usage. Optional idle detection pauses the daily counter.
 - A website's allowance is shared across its tabs. Once exhausted, all matching tabs close, and new matching tabs close too.
 - After ScrollGuard closes a website, it sends a desktop notification titled **ScrollGuard**: **You've reached your time limit for [nickname]**. This also applies when an earned break expires. Notifications are enabled by default and can be disabled in Settings. Closing a tab yourself does not trigger one.
@@ -49,7 +50,7 @@ Optional **Repeated breaks** settings increase question count and/or difficulty 
 
 ## Other settings
 
-- Per website: daily minutes, subdomains, limit-and-close / track-only / off, earned breaks, and math/reward overrides.
+- Per website: daily minutes, subdomains, limit-and-close / track-only / off, earned breaks, and math/reward overrides. A YouTube rule can cover all of YouTube or Shorts only. One rule is supported per domain; changing its scope keeps the existing daily usage.
 - Breaks: 1–5 minutes per challenge; optional per-website caps on daily break count and total minutes granted. Zero means no cap.
 - Preferences: automatically reopen the website, closure notifications, toolbar status, and idle detection.
 - Settings protection: immediate edits (default), a math challenge to apply edits, or changes queued for the next 6 AM reset. Protection covers edits to existing rules and global settings, including its own setting. New website rules can be added immediately without applying pending changes early.
@@ -96,7 +97,7 @@ npx playwright install chromium
 node scripts/browser-smoke.js
 ```
 
-Set `HEADED=1` to show the test browser window; keep it focused while the active-use timer runs. The smoke test covers active-use limits, one rejected heartbeat and recovery, native notification API calls, math challenges and saved progress, elapsed-clock break expiry, blocked revisits, a browser restart, and a simulated four-hour same-day gap. The time jump changes only the test worker's clock; it does not change your Mac/PC clock or represent a four-hour endurance run. Notifications are checked at the browser API level; operating-system banner delivery depends on system notification settings.
+Set `HEADED=1` to show the test browser window; keep it focused while the active-use timer runs. The smoke test covers adding YouTube through the native optional-permission API, Shorts-only tracking and closure across same-tab navigation, active-use limits, one rejected heartbeat and recovery, native notification API calls, math challenges and saved progress, elapsed-clock break expiry, blocked revisits, a browser restart, and a simulated four-hour same-day gap. YouTube access is pre-approved through Chromium's extension-management API only in the disposable test profile; the form's actual permission request and manifest validation remain in use. The time jump changes only the test worker's clock; it does not change your Mac/PC clock or represent a four-hour endurance run. Notifications are checked at the browser API level; operating-system banner delivery depends on system notification settings.
 
 `python scripts/package-release.py` builds and verifies separate Windows and macOS ZIPs in `dist/`, including `challenge/`, an OS-specific `INSTALL.md`, and SHA-256 checksums. Python 3 is needed only for packaging. Tagging `v<manifest version>` runs the cross-platform checks and real packaged-extension browser tests before publishing both downloads in one GitHub release.
 

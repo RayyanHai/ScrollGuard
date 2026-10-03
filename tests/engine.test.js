@@ -25,6 +25,43 @@ test('the usage day changes at 6 AM, never at midnight', () => {
   assert.equal(E.nextReset(at('16', '05:59')), at('16', '06:00'));
   assert.equal(E.nextReset(at('16', '06:00')), at('17', '06:00'));
 });
+
+test('optional website requests fit individual manifest scheme declarations', () => {
+  const manifest = require('../manifest.json');
+  for (const subdomains of [true, false]) {
+    const site = C.site({ domain: 'youtube.com', limitMinutes: 5, subdomains });
+    const origins = C.origins(site);
+    assert.equal(origins.length, 2);
+    for (const origin of origins) {
+      const [scheme, host] = origin.split('://');
+      assert.ok(manifest.optional_host_permissions.includes(`${scheme}://*/*`), `${origin} must fit one manifest pattern`);
+      assert.equal(host, `${subdomains ? '*.' : ''}youtube.com/*`);
+    }
+  }
+});
+
+test('Shorts rules match only the Shorts path on the selected YouTube hosts', () => {
+  const site = C.site({ domain: 'https://www.youtube.com/shorts/abc?feature=share', limitMinutes: 5 });
+  assert.equal(site.scope, 'shorts');
+  assert.equal(site.name, 'YouTube Shorts');
+  assert.equal(C.site({ domain: ' youtube.com/shorts ', limitMinutes: 5 }).scope, 'shorts');
+  assert.equal(C.homeUrl(site), 'https://youtube.com/shorts');
+  for (const url of ['https://youtube.com/shorts', 'https://www.youtube.com/shorts/abc?x=1', 'https://m.youtube.com/shorts/abc#x']) {
+    assert.ok(C.matches(site, url), url);
+  }
+  for (const url of ['https://youtube.com/', 'https://youtube.com/watch?v=abc', 'https://youtube.com/shortstuff',
+    'https://youtube.com/feed/shorts', 'https://youtube.com/watch?next=/shorts/abc', 'https://notyoutube.com/shorts/abc',
+    'https://youtube.com.evil.test/shorts/abc', 'file://youtube.com/shorts/abc']) {
+    assert.ok(!C.matches(site, url), url);
+  }
+  assert.ok(!C.matches({ ...site, subdomains: false }, 'https://m.youtube.com/shorts/abc'));
+  assert.ok(C.matches({ ...site, scope: 'all' }, 'https://youtube.com/watch?v=abc'));
+  const legacy = { domain: 'youtube.com', subdomains: true };
+  assert.ok(C.matches(legacy, 'https://youtube.com/watch?v=abc'));
+  assert.equal(C.site({ ...site, scope: 'all' }).scope, 'all');
+  assert.throws(() => C.site({ domain: 'example.com', scope: 'shorts', limitMinutes: 5 }), /YouTube/);
+  assert.throws(() => C.site({ ...site, scope: 'invalid' }), /YouTube/);
+});
 test('allowance exhaustion caps charged use and blocks the website', () => {
   const now = at('16', '12:00'); const [state, site] = fixture(now);
   E.charge(state, site.domain, now, now + 4 * C.MINUTE);
