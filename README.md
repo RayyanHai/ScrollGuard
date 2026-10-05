@@ -1,6 +1,6 @@
 # ScrollGuard
 
-ScrollGuard tracks active website use and closes a website's tabs when its daily limit is reached. Complete math problems to unlock an elapsed-clock break. **Resets Daily at 6:00 AM** in your local timezone.
+ScrollGuard tracks active website use and blocks a website when its daily limit is reached. Complete math problems to unlock an elapsed-clock break. **Resets Daily at 6:00 AM** in your local timezone.
 
 ## Install or update
 
@@ -21,12 +21,12 @@ The same installation steps apply to Chrome on macOS and Windows. Chrome 120 or 
 ## How it works
 
 - Website rules are editable; Instagram and TikTok are not the only supported sites.
-- For YouTube Shorts, enter `youtube.com/shorts` or choose **YouTube Shorts only** when adding `youtube.com`. Only `/shorts` pages count toward this rule and close at the limit; regular YouTube videos remain available. Navigating between regular videos and Shorts in the same tab updates tracking automatically.
+- For YouTube Shorts, enter `youtube.com/shorts` or choose **YouTube Shorts only** when adding `youtube.com`. Only `/shorts` pages count toward this rule and are blocked at the limit; regular YouTube videos remain available. Navigating between regular videos and Shorts in the same tab updates tracking automatically.
 - A daily allowance counts active use in the selected tab of the focused browser window. Background tabs do not multiply usage. Optional idle detection pauses the daily counter.
-- A website's allowance is shared across its tabs. Once exhausted, all matching tabs close, and new matching tabs close too.
-- After ScrollGuard closes a website, it sends a desktop notification titled **ScrollGuard**: **You've reached your time limit for [nickname]**. This also applies when an earned break expires. Notifications are enabled by default and can be disabled in Settings. Closing a tab yourself does not trigger one.
+- A website's allowance is shared across its tabs. Once exhausted, blocked visits return to the previous page in the same tab when possible. Fresh tabs with no previous page close. This behavior is the same on Windows and macOS.
+- After ScrollGuard blocks a website, it sends a desktop notification titled **ScrollGuard**: **You've reached your time limit for [nickname]**. This also applies when an earned break expires and every time you try to reopen a blocked website. Notifications are enabled by default and can be disabled in Settings. Returning an existing tab keeps that tab focused; notifications do not open or focus the overview in this case. Closing a tab yourself does not trigger one.
 - Click a closure notification to open the **Activity overview** home hub. If the hub is already open, ScrollGuard brings its tab and window forward and returns it to Overview.
-- If Chrome denies or fails to send a notification, ScrollGuard opens the overview with a persistent, dismissible time-limit alert. Settings includes **Test notification**. OS Focus / Do not disturb can still silence a successfully sent banner; enable Chrome notifications using the [Windows guide](docs/INSTALL-windows.md) or [macOS guide](docs/INSTALL-macos.md).
+- With notifications enabled, each automatic closure also opens or focuses the overview with a persistent, dismissible time-limit alert. This explanation appears even when Chrome accepts a notification but the operating system hides it. Repeated attempts reuse the same overview tab. Settings includes **Test notification**. Desktop banners and sounds follow your system settings; enable Chrome notifications using the [Windows guide](docs/INSTALL-windows.md) or [macOS guide](docs/INSTALL-macos.md).
 - The popup offers **Earn a break**. A dedicated challenge page presents one question at a time and saves progress.
 - Finish the required number of questions to earn a break. There is **no challenge time limit**. A wrong answer keeps the same question and never removes progress.
 - Breaks last **1–5 minutes of elapsed clock time**. Switching away, closing the site, or restarting Chrome does not pause or renew them. Breaks cannot stack or be earned in advance.
@@ -97,7 +97,7 @@ npx playwright install chromium
 node scripts/browser-smoke.js
 ```
 
-Set `HEADED=1` to show the test browser window; keep it focused while the active-use timer runs. The smoke test covers adding YouTube through the native optional-permission API, Shorts-only tracking and closure across same-tab navigation, active-use limits, one rejected heartbeat and recovery, native notification API calls, math challenges and saved progress, elapsed-clock break expiry, blocked revisits, a browser restart, and a simulated four-hour same-day gap. YouTube access is pre-approved through Chromium's extension-management API only in the disposable test profile; the form's actual permission request and manifest validation remain in use. The time jump changes only the test worker's clock; it does not change your Mac/PC clock or represent a four-hour endurance run. Notifications are checked at the browser API level; operating-system banner delivery depends on system notification settings.
+Set `HEADED=1` to show the test browser window; keep it focused while the active-use timer runs. The smoke test covers adding YouTube through the native optional-permission API, Shorts-only tracking and blocking across same-tab navigation, active-use limits, one rejected heartbeat and recovery, native notification API calls, math challenges and saved progress, elapsed-clock break expiry, blocked revisits, same-tab Instagram returns without losing focus (also after restart), a browser restart, and a simulated four-hour same-day gap. YouTube access is pre-approved through Chromium's extension-management API only in the disposable test profile; the form's actual permission request and manifest validation remain in use. The time jump changes only the test worker's clock; it does not change your Mac/PC clock or represent a four-hour endurance run. Notifications are checked at the browser API level; operating-system banner delivery depends on system notification settings.
 
 `python scripts/package-release.py` builds and verifies separate Windows and macOS ZIPs in `dist/`, including `challenge/`, an OS-specific `INSTALL.md`, and SHA-256 checksums. Python 3 is needed only for packaging. Tagging `v<manifest version>` runs the cross-platform checks and real packaged-extension browser tests before publishing both downloads in one GitHub release.
 

@@ -55,12 +55,7 @@ test('Shorts accounting follows same-tab navigation and never closes ordinary Yo
     assert.equal((await h.pulse(1)).tracking, true, 'The detector must stay alive outside Shorts');
   }
   assert.equal(h.read().usage['youtube.com'].baseMs, 0);
-  const navigate = async url => {
-    const tab = h.currentTabs.get(1);
-    tab.url = url;
-    h.chrome.tabs.onUpdated.emit(1, { url }, tab);
-    await h.flush();
-  };
+  const navigate = url => h.navigate(1, url);
   await navigate('https://www.youtube.com/shorts/abc');
   h.advance(1000); await h.pulse(1);
   assert.equal(h.read().usage['youtube.com'].baseMs, 1000);
@@ -69,7 +64,8 @@ test('Shorts accounting follows same-tab navigation and never closes ordinary Yo
   assert.equal(h.read().usage['youtube.com'].baseMs, 1000);
   await navigate('https://www.youtube.com/shorts/def');
   for (let i = 0; i < 2; i++) { h.advance(1000); await h.pulse(1); }
-  assert.deepEqual(h.removed.sort(), [1, 3]);
+  assert.deepEqual(h.removed, [3]);
+  assert.equal(h.currentTabs.get(1).url, 'https://www.youtube.com/watch?v=regular');
   assert.ok(h.currentTabs.has(2), 'Regular YouTube video must remain open');
 });
 
@@ -181,6 +177,7 @@ test('closure notifications use the nickname, follow tab closure, and group matc
   assert.equal(h.notifications[0].title, 'ScrollGuard');
   assert.equal(h.notifications[0].iconUrl, h.chrome.runtime.getURL('icons/icon-192.png'));
   assert.equal(h.notifications[0].message, "You've reached your time limit for My videos");
+  assert.equal(h.notifications[0].silent, false);
   assert.deepEqual(h.notifications[0].closedTabIds, [1, 2]);
   h.chrome.alarms.onAlarm.emit({ name: 'maintenance' }); await h.flush();
   assert.equal(h.notifications.length, 1);
@@ -190,7 +187,87 @@ test('closure notifications use the nickname, follow tab closure, and group matc
   assert.equal(h.notifications[1].message, "You've reached your time limit for My videos");
 });
 
-test('clicking a closure notification opens the home hub and dismisses the notification', async () => {
+test('successful notifications also open one persistent overview alert for the whole closure batch', async () => {
+  const state = stateWith(0);
+  state.sites[0].name = 'My videos';
+  state.sites.push(C.site({ domain: 'other.test', name: 'Other', limitMinutes: 0 }));
+  const h = await harness({ now, storage: { scrollguardV4: state }, tabs: [
+    { id: 1, url: 'https://example.com' },
+    { id: 2, url: 'https://m.example.com/watch', active: false },
+    { id: 3, url: 'https://other.test', active: false },
+  ] });
+  assert.deepEqual(h.removed, [1, 2, 3]);
+  assert.equal(h.notifications.length, 2);
+  assert.equal(h.created.length, 1, 'A successful native API call does not prove the OS showed its banner');
+  assert.equal(h.created[0].url, h.chrome.runtime.getURL('options/options.html#overview'));
+  assert.equal(h.created[0].active, true);
+  assert.deepEqual(h.focusedWindows, [1]);
+  assert.equal((await h.send({ type: 'GET_STATE' })).limitNotice,
+    "You've reached your time limit for My videos, Other. The website tabs were closed.");
+  h.chrome.alarms.onAlarm.emit({ name: 'maintenance' }); await h.flush();
+  assert.equal(h.notifications.length, 2);
+  assert.equal(h.created.length, 1);
+  assert.deepEqual(h.focusedWindows, [1], 'Maintenance without a new closure must not steal focus');
+  const restored = await harness({ now, storage: h.storage });
+  assert.match((await restored.send({ type: 'GET_STATE' })).limitNotice, /time limit for My videos, Other/);
+  assert.equal(restored.notifications.length, 0);
+  assert.equal(restored.created.length, 0, 'Restoring the saved explanation must not reopen it by itself');
+});
+
+test('each blocked revisit restores a dismissed alert and brings the existing overview forward', async () => {
+  const h = await harness({ now, storage: { scrollguardV4: stateWith(0) },
+    tabs: [{ id: 1, url: 'https://example.com' }] });
+  const hub = h.created[0];
+  for (const id of [2, 3]) {
+    assert.equal((await h.send({ type: 'DISMISS_LIMIT_NOTICE' })).ok, true);
+    assert.equal((await h.send({ type: 'GET_STATE' })).limitNotice, null);
+    await h.chrome.tabs.update(hub.id, {
+      url: h.chrome.runtime.getURL('options/options.html#settings'), active: false,
+    });
+    const retry = { id, windowId: 1, active: true, url: `https://example.com/again-${id}` };
+    h.currentTabs.set(id, retry);
+    h.chrome.tabs.onCreated.emit(retry); await h.flush();
+    assert.ok(h.removed.includes(id));
+    assert.equal(h.notifications.length, id);
+    assert.equal(h.created.length, 1, 'Revisits must reuse the existing hub');
+    assert.equal(h.currentTabs.get(hub.id).url, h.chrome.runtime.getURL('options/options.html#overview'));
+    assert.equal(h.currentTabs.get(hub.id).active, true);
+    assert.match((await h.send({ type: 'GET_STATE' })).limitNotice, /time limit for example.com/);
+    assert.equal(h.focusedWindows.length, id);
+  }
+});
+
+for (const navigation of ['existing tab URL change', 'new tab pending URL']) {
+  test(`blocked ${navigation} preserves prior pages and notifies`, async () => {
+    const h = await harness({ now, storage: { scrollguardV4: stateWith(0) },
+      tabs: navigation === 'existing tab URL change' ? [{ id: 1, url: 'https://unrelated.test' }] : [] });
+    assert.equal(h.notifications.length, 0);
+    if (navigation === 'existing tab URL change') {
+      const tab = { id: 1, windowId: 1, active: true, url: 'https://example.com/again' };
+      h.currentTabs.set(1, tab);
+      h.chrome.tabs.onUpdated.emit(1, { url: tab.url }, tab);
+    } else {
+      const tab = { id: 1, windowId: 1, active: true, url: 'about:blank', pendingUrl: 'https://example.com/again' };
+      h.currentTabs.set(1, tab);
+      h.chrome.tabs.onCreated.emit(tab);
+    }
+    await h.flush();
+    assert.equal(h.notifications.length, 1);
+    if (navigation === 'existing tab URL change') {
+      assert.deepEqual(h.removed, []);
+      assert.equal(h.currentTabs.get(1).url, 'https://unrelated.test');
+      assert.equal(h.created.length, 0);
+      assert.deepEqual(h.focusedWindows, []);
+    } else {
+      assert.deepEqual(h.removed, [1]);
+      assert.equal(h.created.length, 1);
+      assert.equal(h.created[0].url, h.chrome.runtime.getURL('options/options.html#overview'));
+    }
+    assert.match((await h.send({ type: 'GET_STATE' })).limitNotice, /time limit for example.com/);
+  });
+}
+
+test('clicking a closure notification reuses the opened home hub and dismisses the notification', async () => {
   const h = await harness({ now, storage: { scrollguardV4: stateWith(0) },
     tabs: [{ id: 1, url: 'https://example.com' }] });
   assert.equal(h.notifications.length, 1);
@@ -198,7 +275,7 @@ test('clicking a closure notification opens the home hub and dismisses the notif
   assert.equal(h.created.length, 1);
   assert.equal(h.created[0].url, h.chrome.runtime.getURL('options/options.html#overview'));
   assert.equal(h.created[0].active, true);
-  assert.deepEqual(h.focusedWindows, [h.created[0].windowId]);
+  assert.deepEqual(h.focusedWindows, [h.created[0].windowId, h.created[0].windowId]);
   assert.deepEqual(h.clearedNotifications, ['notification-1']);
   assert.equal(h.read().usage['example.com'].breaks, 0);
 });
@@ -233,9 +310,13 @@ test('manual closes and failed automatic closes do not produce limit notificatio
   const h = await harness({ now, storage: { scrollguardV4: stateWith() }, tabs: [{ id: 1, url: 'https://example.com' }] });
   h.currentTabs.delete(1); h.chrome.tabs.onRemoved.emit(1); await h.flush();
   assert.equal(h.notifications.length, 0);
+  assert.equal(h.created.length, 0);
+  assert.equal((await h.send({ type: 'GET_STATE' })).limitNotice, null);
   const failure = await harness({ now, storage: { scrollguardV4: stateWith(0) },
     tabs: [{ id: 2, url: 'https://example.com' }], failRemoval: [2] });
   assert.equal(failure.notifications.length, 0);
+  assert.equal(failure.created.length, 0);
+  assert.equal((await failure.send({ type: 'GET_STATE' })).limitNotice, null);
   assert.ok(failure.currentTabs.has(2));
 });
 

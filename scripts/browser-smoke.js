@@ -36,12 +36,18 @@ const E = require('../lib/engine.js');
     await context.route(/^https:\/\/(?:www\.)?tiktok\.com\//, route => route.fulfill({
       contentType: 'text/html', body: '<!doctype html><title>Tracked fixture</title><h1>Tracked test website</h1>',
     }));
+    await context.route(/^https:\/\/(?:www\.)?instagram\.com\//, route => route.fulfill({
+      contentType: 'text/html', body: '<!doctype html><title>Instagram fixture</title><h1>Blocked test website</h1>',
+    }));
+    await context.route(/^https:\/\/scrollguard\.test\//, route => route.fulfill({
+      contentType: 'text/html', body: '<!doctype html><title>Previous page fixture</title><h1>Keep this page open</h1>',
+    }));
     if (wakeUrl) {
       // Wake the restored extension through its UI before attaching to its MV3
       // execution context. Chromium may expose a dormant worker target first.
       const wakePage = await context.newPage();
       await wakePage.goto(wakeUrl);
-      await wakePage.getByRole('button', { name: 'Earn a break' }).waitFor();
+      await wakePage.getByRole('button', { name: 'Earn a break' }).first().waitFor();
       return wakePage;
     }
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
@@ -54,6 +60,45 @@ const E = require('../lib/engine.js');
     const closed = tab.waitForEvent('close', { timeout: 10000 });
     await tab.goto(url).catch(error => { if (!tab.isClosed() && !/closed|ERR_ABORTED/.test(error.message)) throw error; });
     await closed;
+  };
+  const expectExistingTabPreserved = async (inspector, phase) => {
+    // Closing the preceding fresh tab completes before its notification flow.
+    // Drain that flow before selecting the existing-tab fixture.
+    await inspector.evaluate(async () => {
+      const reply = await chrome.runtime.sendMessage({ type: 'GET_STATE' });
+      if (!reply.ok) throw new Error(reply.error);
+    });
+    const previousUrl = `https://scrollguard.test/${phase}`;
+    const existing = await context.newPage();
+    await existing.goto(previousUrl);
+    await existing.bringToFront();
+    const originalTab = await inspector.evaluate(async url => {
+      const reply = await chrome.runtime.sendMessage({ type: 'GET_STATE' });
+      if (!reply.ok) throw new Error(reply.error);
+      return (await chrome.tabs.query({})).find(tab => tab.url === url);
+    }, previousUrl);
+    assert.ok(originalTab?.active, 'The existing website must begin as the selected tab.');
+    const pageCount = context.pages().length;
+    const overviewUrls = () => context.pages().filter(p => p.url().includes('/options/options.html')).map(p => p.url()).sort();
+    const originalOverviewUrls = overviewUrls();
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await existing.goto(`https://www.instagram.com/${phase}-${attempt}`).catch(error => {
+        assert.equal(existing.isClosed(), false, 'Blocking Instagram must preserve the existing tab.');
+        if (!/ERR_ABORTED|interrupted by another navigation/.test(error.message)) throw error;
+      });
+      await existing.waitForURL(previousUrl);
+      assert.equal(await existing.title(), 'Previous page fixture');
+      const restoredTab = await inspector.evaluate(async id => {
+        const reply = await chrome.runtime.sendMessage({ type: 'GET_STATE' });
+        if (!reply.ok) throw new Error(reply.error);
+        return chrome.tabs.get(id);
+      }, originalTab.id);
+      assert.equal(restoredTab.url, previousUrl);
+      assert.equal(restoredTab.active, true, 'The previous page must stay selected after blocking Instagram.');
+      assert.equal(context.pages().length, pageCount, 'Returning to the previous page must not open another tab.');
+      assert.deepEqual(overviewUrls(), originalOverviewUrls, 'Blocking an existing tab must not navigate or open the overview.');
+    }
+    await existing.close();
   };
   try {
     let worker = await launch();
@@ -132,12 +177,11 @@ const E = require('../lib/engine.js');
       assert.equal(notifications[0].options.title, 'ScrollGuard');
       assert.equal(notifications[0].options.message, "You've reached your time limit for TikTok");
       assert.ok(notifications[0].id);
-    } else {
-      // Some headless CI desktops cannot deliver native notifications. The
-      // visible fallback must still explain the closure in the real browser.
-      await page.locator('#limit-notice').waitFor({ state: 'visible' });
-      assert.match(await page.locator('#limit-notice').textContent(), /time limit for TikTok/);
     }
+    // The explanation must be visible regardless of native API success.
+    await page.waitForURL('**/options/options.html#overview');
+    await page.locator('#limit-notice').waitFor({ state: 'visible' });
+    assert.match(await page.locator('#limit-notice').textContent(), /time limit for TikTok/);
     console.log(`Native notification API: ${notifications.length ? 'accepted' : 'unavailable; browser fallback verified'}`);
     await page.bringToFront();
     await page.getByRole('button', { name: 'Overview', exact: true }).click();
@@ -185,6 +229,31 @@ const E = require('../lib/engine.js');
       assert.match(await page.locator('#limit-notice').textContent(), /time limit for TikTok/);
     }
     await expectBlockedVisit('https://www.tiktok.com/again');
+    // Simulate a native API success with no OS banner. A fresh blocked revisit
+    // must still restore a dismissed explanation and focus the existing hub.
+    await page.locator('#limit-notice').getByRole('button', { name: 'Dismiss', exact: true }).click();
+    await page.locator('#limit-notice').waitFor({ state: 'hidden' });
+    await page.goto(`${base}/options/options.html#settings`);
+    await worker.evaluate(() => {
+      globalThis.__workingNotificationPermission = chrome.notifications.getPermissionLevel;
+      globalThis.__workingNotificationCreate = chrome.notifications.create;
+      chrome.notifications.getPermissionLevel = async () => 'granted';
+      chrome.notifications.create = async options => {
+        globalThis.__suppressedNotification = options;
+        return 'smoke-suppressed-banner';
+      };
+    });
+    await expectBlockedVisit('https://www.tiktok.com/suppressed-banner');
+    await page.waitForURL('**/options/options.html#overview');
+    await page.locator('#limit-notice').waitFor({ state: 'visible' });
+    assert.match(await page.locator('#limit-notice').textContent(), /time limit for TikTok/);
+    assert.equal(context.pages().filter(p => p.url().includes('/options/options.html')).length, 1);
+    assert.equal(await worker.evaluate(() => globalThis.__suppressedNotification.message), "You've reached your time limit for TikTok");
+    await page.screenshot({ path: path.join(root, 'test-results/blocked-revisit.png'), fullPage: true });
+    await worker.evaluate(() => {
+      chrome.notifications.getPermissionLevel = globalThis.__workingNotificationPermission;
+      chrome.notifications.create = globalThis.__workingNotificationCreate;
+    });
     // Force a notification API failure; closure must still open/focus the hub,
     // show its explanation, and persist the exhausted allowance.
     await worker.evaluate(() => {
@@ -211,6 +280,17 @@ const E = require('../lib/engine.js');
     await worker.evaluate(async () => {
       for (const { id } of globalThis.__notificationEvents) await chrome.notifications.clear(id);
     });
+
+    await worker.evaluate(() => enqueue(async () => {
+      state.sites.push(C.site({ domain: 'instagram.com', name: 'Instagram', limitMinutes: 0 }, state.sites));
+      state.revision++;
+      await configure();
+      await commit();
+    }));
+    await expectBlockedVisit('https://www.instagram.com/fresh-tab');
+    await page.waitForURL('**/options/options.html#overview');
+    await page.goto(`${base}/options/options.html#settings`);
+    await expectExistingTabPreserved(popup, 'existing-tab');
 
     const persisted = await worker.evaluate(async () => {
       await queue;
@@ -249,11 +329,13 @@ const E = require('../lib/engine.js');
       return (await chrome.storage.local.get('scrollguardV4')).scrollguardV4.usage['tiktok.com'];
     }), persisted);
     await expectBlockedVisit('https://www.tiktok.com/after-browser-restart');
+    await expectExistingTabPreserved(restoredPopup, 'after-browser-restart');
+    await expectBlockedVisit('https://www.instagram.com/fresh-tab-after-browser-restart');
     await restoredPopup.evaluate(async () => {
       for (const id of Object.keys(await chrome.notifications.getAll())) await chrome.notifications.clear(id);
     });
     assert.deepEqual(errors, []);
-    console.log(`PASS on ${os.platform()} ${os.release()} ${os.arch()}, Chromium ${browserVersion}: real MV3 startup, site setup, settings, notification preview, active allowance, transient heartbeat rejection/retry, tab closure, native notification API attempt, persistent notification fallback, challenge retry/reload/grant, elapsed-clock deadline, expiry, reopening enforcement, popup, browser restart, and simulated four-hour blocking.`);
+    console.log(`PASS on ${os.platform()} ${os.release()} ${os.arch()}, Chromium ${browserVersion}: real MV3 startup, site setup, settings, notification preview, active allowance, transient heartbeat rejection/retry, fresh-tab closure, repeated Instagram navigation preserving the existing page and selected tab before/after restart, native notification API attempt, persistent notification fallback, challenge retry/reload/grant, elapsed-clock deadline, expiry, reopening enforcement, popup, browser restart, and simulated four-hour blocking.`);
   } finally {
     await context?.close();
     const target = fs.realpathSync(profile), allowedRoot = fs.realpathSync(profileRoot);

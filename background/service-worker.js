@@ -4,6 +4,7 @@ const C = SG, E = SGEngine;
 let state;
 let tabs = new Map(), focusedWindow = null, idle = 'active', active = null;
 let access = new Set(), visible = new Map(), lastPulse = new Map(), returnUrls = new Map();
+const safeUrls = new Map(), returningTabs = new Map();
 let expiryTimer = null, appliedRevision = -1;
 let initialized = false;
 
@@ -39,6 +40,8 @@ async function scanBrowser() {
   tabs = new Map((await chrome.tabs.query({})).map(t => [t.id, t]));
   for (const id of visible.keys()) if (!tabs.has(id)) visible.delete(id);
   for (const id of lastPulse.keys()) if (!tabs.has(id)) lastPulse.delete(id);
+  for (const id of safeUrls.keys()) if (!tabs.has(id)) safeUrls.delete(id);
+  for (const id of returningTabs.keys()) if (!tabs.has(id)) returningTabs.delete(id);
   const win = await chrome.windows.getLastFocused().catch(() => null);
   focusedWindow = win?.focused ? win.id : null;
   idle = await chrome.idle.queryState(state.settings.idleSeconds);
@@ -103,40 +106,98 @@ async function repairHeartbeat(now) {
   await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/detector.js'] }).catch(() => {});
 }
 async function enforce(now) {
-  const close = [];
-  for (const tab of tabs.values()) {
-    const site = siteFor(tab.pendingUrl || tab.url);
-    if (!site || E.status(state, site, now) !== 'blocked') continue;
-    if (C.matches(site, tab.url)) returnUrls.set(site.domain, tab.url);
-    close.push({ id: tab.id, site });
-  }
-  const closedSites = new Map();
-  for (const { id, site } of close) {
-    try { await chrome.tabs.remove(id); }
-    catch { continue; }
-    closedSites.set(site.domain, site);
-    tabs.delete(id);
+  const blockedSites = new Map(), notifySites = new Map();
+  let returned = false;
+  const canReturn = url => {
+    if (!url || url === 'about:blank') return false;
+    const site = siteFor(url);
+    return !site || E.status(state, site, now) !== 'blocked';
+  };
+  for (const cached of tabs.values()) {
+    // Events queued during a navigation may describe a page already left.
+    let tab = cached;
+    if (siteFor(cached.pendingUrl || cached.url) || returningTabs.has(cached.id)) {
+      tab = await chrome.tabs.get(cached.id).catch(() => null);
+      if (!tab) continue;
+      tabs.set(tab.id, tab);
+    }
+    const returning = returningTabs.get(tab.id);
+    const url = tab.pendingUrl || tab.url;
+    // Chromium can include its initial about:blank in a new tab's history.
+    // That is not a previous page to preserve, even if Back reports success.
+    const site = siteFor(url) || (!canReturn(url) && returning?.site);
+    if (canReturn(tab.url)) safeUrls.set(tab.id, tab.url);
+    if (!site || E.status(state, site, now) !== 'blocked') {
+      returningTabs.delete(tab.id);
+      continue;
+    }
+    const id = tab.id;
+    // Back starts a navigation; later tab events finish it. Do not close the
+    // tab or issue Back twice while Chrome still reports the blocked page.
+    if (returning && returning.url === url && now < returning.until) continue;
+    if (C.matches(site, url)) returnUrls.set(site.domain, url);
+    const fallback = safeUrls.get(id);
+    let restored = false;
+    try {
+      if (tab.pendingUrl && canReturn(tab.url)) {
+        // The blocked page has not committed. Back here would skip the page
+        // the user wants to keep, so cancel the pending visit in place.
+        await chrome.tabs.update(id, { url: tab.url });
+      } else if (!returning) {
+        // Browser history survives service-worker and browser restarts.
+        await chrome.tabs.goBack(id);
+        const back = await chrome.tabs.get(id);
+        const destination = back.pendingUrl || back.url;
+        if (destination !== url && !canReturn(destination)) {
+          throw new Error('No unblocked previous page.');
+        }
+      } else {
+        throw new Error('The previous page is still blocked.');
+      }
+      restored = true;
+    } catch {
+      if (canReturn(fallback)) {
+        try { await chrome.tabs.update(id, { url: fallback }); restored = true; }
+        catch { /* Retry enforcement if both navigation and removal fail. */ }
+      }
+    }
+    if (restored) {
+      returningTabs.set(id, { url, site, until: now + 5000,
+        notified: state.settings.notifications || returning?.notified });
+      returned = true;
+    } else {
+      try { await chrome.tabs.remove(id); }
+      catch { returningTabs.delete(id); continue; }
+      tabs.delete(id);
+      safeUrls.delete(id);
+      returningTabs.delete(id);
+    }
+    blockedSites.set(site.domain, site);
+    // Finishing a delayed return (including closing an initial blank page)
+    // belongs to the same attempt and must not send a second notification.
+    if (!returning?.notified || returning.site.domain !== site.domain) notifySites.set(site.domain, site);
     visible.delete(id);
     lastPulse.delete(id);
     if (active?.tabId === id) active = null;
   }
-  // One notification per website in this closure batch, after at least one tab
-  // was actually closed. Later blocked visits should notify again.
-  if (state.settings.notifications) {
-    const missed = [];
-    for (const site of closedSites.values()) {
+  // One notification per website acted on. Later blocked visits notify again.
+  if (state.settings.notifications && blockedSites.size) {
+    // macOS can suppress a banner even when Chrome accepts the notification.
+    // Keep a browser-visible explanation for every closure, including revisits.
+    const names = [...blockedSites.values()].map(site => site.name);
+    const action = returned ? 'Blocked visits were returned to the previous page where possible.' : 'The website tabs were closed.';
+    state.limitNotice = { day: state.day, message: `You've reached your time limit for ${names.join(', ')}. ${action}` };
+    // Persist the explanation before either notification delivery or opening
+    // the overview, so it survives a worker restart or a browser API failure.
+    await SGStorage.save(state);
+    for (const site of notifySites.values()) {
       try { await sendNotification(`You've reached your time limit for ${site.name}`); }
       catch (error) {
         console.error('[ScrollGuard] Notification failed:', error.message);
-        missed.push(site.name);
       }
     }
-    if (missed.length) {
-      state.limitNotice = { day: state.day, message: `You've reached your time limit for ${missed.join(', ')}. The website tabs were closed.` };
-      // Save the explanation even if opening a browser tab also fails.
-      await SGStorage.save(state);
-      await openOverview().catch(reportError);
-    }
+    // Keep the restored page in front, including when the OS hides a banner.
+    if (!returned) await openOverview().catch(reportError);
   }
 }
 async function sendNotification(message) {
@@ -144,7 +205,7 @@ async function sendNotification(message) {
     throw new Error('Chrome notifications are disabled. Enable notifications for your browser in system settings.');
   }
   return chrome.notifications.create({ type: 'basic', iconUrl: chrome.runtime.getURL('icons/icon-192.png'),
-    title: 'ScrollGuard', message });
+    title: 'ScrollGuard', message, silent: false });
 }
 async function openOverview() {
   const page = chrome.runtime.getURL('options/options.html');
@@ -381,7 +442,9 @@ chrome.tabs.onUpdated.addListener((id, change, tab) => {
   });
 });
 chrome.tabs.onCreated.addListener(tab => browserEvent(() => tabs.set(tab.id, tab)));
-chrome.tabs.onRemoved.addListener(id => browserEvent(() => { tabs.delete(id); visible.delete(id); lastPulse.delete(id); }));
+chrome.tabs.onRemoved.addListener(id => browserEvent(() => {
+  tabs.delete(id); visible.delete(id); lastPulse.delete(id); safeUrls.delete(id); returningTabs.delete(id);
+}));
 chrome.tabs.onAttached.addListener(() => browserEvent(scanBrowser));
 chrome.tabs.onDetached.addListener(() => browserEvent(scanBrowser));
 chrome.tabs.onReplaced.addListener(() => browserEvent(scanBrowser));

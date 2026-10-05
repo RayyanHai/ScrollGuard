@@ -11,6 +11,8 @@ async function harness(options = {}) {
   let nextTab = 100;
   const storage = structuredClone(options.storage || {});
   const currentTabs = new Map((options.tabs || []).map(t => [t.id, { windowId: 1, active: true, ...t }]));
+  const histories = new Map(Object.entries(options.histories || {}).map(([id, urls]) => [Number(id), urls.slice()]));
+  const pendingBack = new Map(), backCalls = [], updated = [];
   const removed = [], created = [], notifications = [], logs = [], executions = [], registrations = new Map(), alarms = new Map();
   const clearedNotifications = [], focusedWindows = [];
   const attempts = { storageReads: 0, registrations: 0, permissionChecks: 0 };
@@ -35,7 +37,22 @@ async function harness(options = {}) {
         removed.push(id); currentTabs.delete(id);
       },
       create: async data => { const t = { id: nextTab++, windowId: 1, active: false, ...data }; created.push(t); currentTabs.set(t.id, t); return t; },
-      update: async (id, data) => Object.assign(currentTabs.get(id), data),
+      update: async (id, data) => {
+        if (!currentTabs.has(id) || options.failUpdate?.includes(id)) throw new Error('Could not update tab');
+        updated.push({ id, ...data });
+        const tab = currentTabs.get(id);
+        Object.assign(tab, data);
+        if ('url' in data) delete tab.pendingUrl;
+        return { ...tab };
+      },
+      goBack: async id => {
+        backCalls.push(id);
+        const history = histories.get(id);
+        if (!currentTabs.has(id) || !history?.length || options.failBack?.includes(id)) throw new Error('Cannot go back');
+        const url = history.pop();
+        if (options.deferBack?.includes(id)) pendingBack.set(id, url);
+        else { currentTabs.get(id).url = url; delete currentTabs.get(id).pendingUrl; }
+      },
       onActivated: event(), onUpdated: event(), onCreated: event(), onRemoved: event(), onAttached: event(), onDetached: event(), onReplaced: event(),
     },
     windows: { WINDOW_ID_NONE: -1, getLastFocused: async () => ({ id: focus || 1, focused: focus != null }),
@@ -78,13 +95,40 @@ async function harness(options = {}) {
     return new Promise(resolve => runtime.onMessage.listeners[0](message, from, resolve));
   }
   return { chrome, send, flush, storage, removed, created, notifications, currentTabs, logs, alarms, attempts, executions,
-    clearedNotifications, focusedWindows,
+    clearedNotifications, focusedWindows, histories, backCalls, updated,
     now: () => now, advance: ms => { now += ms; }, setTime: value => { now = value; },
     async pulse(id, visible = true) {
       const tab = currentTabs.get(id);
       return send({ type: 'PULSE', visible }, { id: runtime.id, tab: { ...tab }, frameId: 0, url: tab?.url });
     },
     async focus(id) { focus = id; chrome.windows.onFocusChanged.emit(id ?? -1); await flush(); },
+    async navigate(id, url, { pending = false } = {}) {
+      const previous = currentTabs.get(id);
+      if (!previous) throw new Error('No tab');
+      const tab = { ...previous };
+      if (pending) tab.pendingUrl = url;
+      else {
+        if (tab.url && tab.url !== url) {
+          if (!histories.has(id)) histories.set(id, []);
+          histories.get(id).push(tab.url);
+        }
+        tab.url = url;
+        delete tab.pendingUrl;
+      }
+      currentTabs.set(id, tab);
+      chrome.tabs.onUpdated.emit(id, pending ? { status: 'loading' } : { url }, { ...tab });
+      await flush();
+    },
+    async completeBack(id) {
+      if (!pendingBack.has(id)) throw new Error('No pending Back navigation');
+      const url = pendingBack.get(id);
+      pendingBack.delete(id);
+      const tab = currentTabs.get(id);
+      tab.url = url;
+      delete tab.pendingUrl;
+      chrome.tabs.onUpdated.emit(id, { url, status: 'complete' }, { ...tab });
+      await flush();
+    },
     read: () => structuredClone(storage.scrollguardV4),
   };
 }

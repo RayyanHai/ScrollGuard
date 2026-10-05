@@ -56,18 +56,21 @@ module.exports = async function shortsSmoke({ context, worker, page, root, id })
   const otherShort = await context.newPage();
   await otherShort.goto('https://m.youtube.com/shorts/another');
   await regular.bringToFront();
-  const closed = Promise.all([regular.waitForEvent('close'), otherShort.waitForEvent('close')]);
+  const otherClosed = otherShort.waitForEvent('close');
   await regular.evaluate(() => history.pushState({}, '', '/shorts/second')).catch(error => {
     if (!regular.isClosed()) throw error;
   });
-  await closed;
+  await Promise.all([regular.waitForURL('**/watch?v=regular'), otherClosed]);
+  assert.equal(regular.isClosed(), false, 'Returning from Shorts must preserve the existing tab');
+  assert.equal(new URL(regular.url()).pathname, '/watch');
   assert.equal(survivor.isClosed(), false, 'The limit must leave regular videos open');
   assert.equal(await worker.evaluate(() => state.usage['youtube.com'].baseMs), 6000);
+  await regular.close();
   await survivor.close();
   await page.bringToFront();
   const removed = await page.evaluate(() => chrome.runtime.sendMessage({ type: 'REMOVE_SITE', domain: 'youtube.com' }));
   assert.equal(removed.ok, true, removed.error);
   await worker.evaluate(async () => { state.settings.notifications = true; await commit(); });
   await page.reload();
-  console.log('YouTube Shorts: native optional-host request, saved scope, SPA tracking/pause, and Shorts-only tab closure passed.');
+  console.log('YouTube Shorts: native optional-host request, saved scope, SPA tracking/pause, previous-page return, and fresh-tab closure passed.');
 };

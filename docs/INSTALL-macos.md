@@ -15,7 +15,7 @@ This download is a Chrome extension, not a native Mac app or Safari extension. I
 3. Open **Apple menu → System Settings → Notifications → Google Chrome** and enable **Allow notifications**. Choose a desktop alert style. If Chrome is not listed yet, send a test notification first.
 4. Check **Focus / Do Not Disturb** if banners are still missing. Older macOS versions call System Settings **System Preferences**.
 
-When an allowance or earned break runs out, ScrollGuard closes that website's tabs and sends a notification with the website nickname. Clicking it opens your Activity overview, where you can earn a break. If Chrome denies or fails to send the notification, ScrollGuard opens the overview with a dismissible time-limit alert instead. macOS can silence banners even when Chrome accepts the notification; ScrollGuard cannot override system settings.
+When an allowance or earned break runs out, or you try to reopen a blocked website, ScrollGuard returns an existing tab to its previous page when possible and closes fresh tabs with no previous page. It sends a notification with the website nickname. After closing a tab, with notifications enabled, it also opens or focuses your Activity overview with a dismissible time-limit alert, where you can earn a break. Returning to a previous page keeps that tab focused and does not open or focus the overview. Repeated closures reuse the same overview tab. The explanation still appears if macOS hides the desktop notification. Desktop banners and sounds follow your macOS notification and Focus settings.
 
 [Apple's notification settings guide](https://support.apple.com/guide/mac-help/notifications-settings-mh40583/mac)
 
