@@ -1,95 +1,123 @@
 # ScrollGuard
 
-ScrollGuard tracks active website use and blocks a website when its daily limit is reached. Complete math problems to unlock an elapsed-clock break. **Resets Daily at 6:00 AM** in your local timezone.
+ScrollGuard is a Chrome extension that gives websites a daily time limit. Once you use up your time on a site, it gets blocked until 6 AM the next morning. If you really need a few more minutes, you can solve some math problems to earn a short break.
 
-## Install or update
+<p align="center">
+  <img src="docs/screenshots/overview.png" width="820" alt="ScrollGuard overview page showing daily time used on TikTok, Instagram, and YouTube Shorts">
+</p>
 
-Download the **Windows** or **macOS** ZIP from the [latest release](https://github.com/RayyanHai/ScrollGuard/releases/latest), extract it, and follow the included `INSTALL.md`. Both downloads contain the same Chrome extension with setup instructions for their platform. Source installations can use the steps below.
+## What it does
 
-1. Keep this repository in a stable folder.
-2. Open `chrome://extensions` and turn on **Developer mode**.
-3. Choose **Load unpacked** and select this folder (the one containing `manifest.json`).
-4. Pin ScrollGuard, open it, and choose **Manage websites**.
-5. Add a website, set its daily allowance, and grant access when Chrome asks.
+- You choose which sites to limit (TikTok, Instagram, Reddit, anything) and how many minutes a day you get on each.
+- Only time you actually spend looking at the site counts. Tabs sitting in the background don't.
+- When your time runs out, the tab goes back to the page you were on before. If there wasn't one, the tab closes. You also get a notification.
+- Want more time? Answer a few math questions to get a 1 to 5 minute break.
+- You can limit just YouTube Shorts and still watch regular YouTube videos.
+- Everything resets at 6 AM your local time.
+- Your data never leaves your browser. There's no account and no server.
 
-For an existing installation, click **Reload** on the extension card. Reload previously open Instagram/TikTok pages to remove the old version's injected overlay. No build step or server is needed.
+## Screenshots
 
-When updating from a release ZIP, replace the files in your existing installation folder before reloading. Keep the same folder and Chrome profile; do not uninstall the extension first, because that removes its locally stored data.
+<table>
+  <tr>
+    <td align="center" width="38%"><img src="docs/screenshots/popup.png" width="300" alt="Toolbar popup with each site's time left"><br><sub>Click the toolbar icon to see time left on each site</sub></td>
+    <td align="center"><img src="docs/screenshots/challenge.png" alt="Math challenge page"><br><sub>Solve math problems to earn a break. No timer.</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/add-website.png" alt="Add a website dialog"><br><sub>Add any site and set its daily minutes</sub></td>
+    <td align="center"><img src="docs/screenshots/settings.png" alt="Settings page with four math difficulty levels"><br><sub>Pick how hard the math is</sub></td>
+  </tr>
+</table>
 
-The same installation steps apply to Chrome on macOS and Windows. Chrome 120 or later is required. This repository contains a Chrome Manifest V3 extension; it is not a native Mac app or a Safari extension. It affects websites in the browser profile where you installed it, not the TikTok desktop/mobile app or other browser profiles.
+## Install
 
-## How it works
+You need Google Chrome 120 or newer. It works on Windows and Mac.
 
-- Website rules are editable; Instagram and TikTok are not the only supported sites.
-- For YouTube Shorts, enter `youtube.com/shorts` or choose **YouTube Shorts only** when adding `youtube.com`. Only `/shorts` pages count toward this rule and are blocked at the limit; regular YouTube videos remain available. Navigating between regular videos and Shorts in the same tab updates tracking automatically.
-- A daily allowance counts active use in the selected tab of the focused browser window. Background tabs do not multiply usage. Optional idle detection pauses the daily counter.
-- A website's allowance is shared across its tabs. Once exhausted, blocked visits return to the previous page in the same tab when possible. Fresh tabs with no previous page close. This behavior is the same on Windows and macOS.
-- After ScrollGuard blocks a website, it sends a desktop notification titled **ScrollGuard**: **You've reached your time limit for [nickname]**. This also applies when an earned break expires and every time you try to reopen a blocked website. Notifications are enabled by default and can be disabled in Settings. Returning an existing tab keeps that tab focused; notifications do not open or focus the overview in this case. Closing a tab yourself does not trigger one.
-- Click a closure notification to open the **Activity overview** home hub. If the hub is already open, ScrollGuard brings its tab and window forward and returns it to Overview.
-- With notifications enabled, each automatic closure also opens or focuses the overview with a persistent, dismissible time-limit alert. This explanation appears even when Chrome accepts a notification but the operating system hides it. Repeated attempts reuse the same overview tab. Settings includes **Test notification**. Desktop banners and sounds follow your system settings; enable Chrome notifications using the [Windows guide](docs/INSTALL-windows.md) or [macOS guide](docs/INSTALL-macos.md).
-- The popup offers **Earn a break**. A dedicated challenge page presents one question at a time and saves progress.
-- Finish the required number of questions to earn a break. There is **no challenge time limit**. A wrong answer keeps the same question and never removes progress.
-- Breaks last **1–5 minutes of elapsed clock time**. Switching away, closing the site, or restarting Chrome does not pause or renew them. Breaks cannot stack or be earned in advance.
-- At 6 AM, daily allowances, break counts, and escalation reset. Unused breaks expire. If Chrome was closed, the reset happens when the extension next runs.
-- Usage totals include active use during earned breaks. A break does not erase the original daily usage.
+1. Download the **Windows** or **macOS** ZIP from the [latest release](https://github.com/RayyanHai/ScrollGuard/releases/latest).
+2. Unzip it into a folder you won't move or delete.
+3. Go to `chrome://extensions` and turn on **Developer mode** (top right).
+4. Click **Load unpacked** and pick the folder you unzipped.
+5. Pin ScrollGuard to your toolbar so it's easy to reach.
 
-Chrome scheduling and suspension can delay enforcement. Foreground heartbeats target approximately one-second accounting; browser events and persisted deadlines provide recovery. Sleep and long missing-heartbeat gaps are not charged as active use. A break deadline remains a wall-clock timestamp.
+Step-by-step guides with more detail: [Windows](docs/INSTALL-windows.md) · [macOS](docs/INSTALL-macos.md)
 
-## Simple math settings
+**Updating:** replace the files in the same folder, then click **Reload** on the ScrollGuard card in `chrome://extensions`. Don't uninstall first, because that deletes your saved usage and settings.
 
-| Difficulty | Problems | Example |
-| --- | --- | --- |
-| Easy | Small-number addition | `8 + 6` |
-| Normal | Addition and subtraction | `47 − 19` |
-| Hard | Multiplication and exact division | `84 ÷ 7` |
-| Extra Hard | Two-step arithmetic | `(18 × 7) − 24` |
+## How to use it
 
-Choose a difficulty and the number of questions. The settings screen shows one example for every level. Defaults are Normal, five questions, and a one-minute break.
+1. Click the ScrollGuard icon and choose **Manage websites**.
+2. Click **Add website**, type the site (like `tiktok.com`), and set your daily minutes.
+3. Chrome will ask to let ScrollGuard access that site. Click **Allow** so it can track your time.
+4. Browse like normal. The toolbar icon shows how many minutes you have left.
+5. When a site is blocked, open the popup and click **Earn a break** if you want more time.
 
-Optional **Repeated breaks** settings increase question count and/or difficulty after successful grants, either per website or across all websites. Wrong answers and abandoned attempts never advance escalation. Escalation is off until enabled.
+To limit only YouTube Shorts, type `youtube.com/shorts` when adding the site.
 
-## Other settings
+## Good to know
 
-- Per website: daily minutes, subdomains, limit-and-close / track-only / off, earned breaks, and math/reward overrides. A YouTube rule can cover all of YouTube or Shorts only. One rule is supported per domain; changing its scope keeps the existing daily usage.
-- Breaks: 1–5 minutes per challenge; optional per-website caps on daily break count and total minutes granted. Zero means no cap.
-- Preferences: automatically reopen the website, closure notifications, toolbar status, and idle detection.
-- Settings protection: immediate edits (default), a math challenge to apply edits, or changes queued for the next 6 AM reset. Protection covers edits to existing rules and global settings, including its own setting. New website rules can be added immediately without applying pending changes early.
-- Daily history: locally stored totals for up to 90 previous usage days, each running 6 AM–6 AM. Removing and re-adding a domain retains its current-day usage.
+- **Wrong answer?** Just try again. There's no timer and you never lose the questions you already got right.
+- **Breaks use real clock time.** Leaving the site or closing Chrome doesn't pause a break, and you can't save breaks for later.
+- **Want it harder to cheat?** In Settings you can make each break need more questions, or lock your settings so changing them takes a math challenge or waits until the next 6 AM.
+- **No notifications showing up?** Check that Chrome is allowed to send notifications in your system settings. The install guides above walk through it.
+- **What it doesn't cover:** phone apps, the TikTok desktop app, other browsers, and other Chrome profiles. It only works in the Chrome profile you installed it in.
 
-Settings-challenge completion does not award a break. Changes to rules invalidate outstanding challenges so old tasks cannot grant outdated rewards. Challenges also end at the daily reset.
-
-## Data and upgrade behavior
-
-Everything stays in `chrome.storage.local`. There is no account or backend. The extension stores domain rules, daily totals, settings, and challenge progress; it does not read page content. Additional website access is requested when that website is added. Removing Chrome's website permission pauses precise tracking and displays an **Enable access** prompt.
-
-Version 4 imports the previous Instagram/TikTok limits and math preferences. Old storage keys remain available for recovery, but old midnight-based usage is not presented as new 6 AM usage. The new daily counter starts at zero and the popup displays a migration notice. Password-based unlocks, the old overlay, and the manual daily-reset button are no longer part of the new flow.
-
-## Code map
-
-| File | Responsibility |
+| Difficulty | Example |
 | --- | --- |
-| `lib/config.js` | Defaults, four difficulty previews, website and settings validation |
-| `lib/engine.js` | Pure daily accounting, 6 AM boundaries, challenges, grants, escalation |
-| `lib/storage.js` | Whole-state persistence and legacy migration |
-| `background/service-worker.js` | Serialized browser events, tracking, tab closure, permissions, messages |
-| `content/detector.js` | Visibility and one-second foreground heartbeat on configured sites |
+| Easy | `8 + 6` |
+| Normal | `47 − 19` |
+| Hard | `84 ÷ 7` |
+| Extra Hard | `(18 × 7) − 24` |
+
+---
+
+## For recruiters: how it's built
+
+ScrollGuard is a Manifest V3 Chrome extension written in plain JavaScript. There's no framework, no build step, and no runtime dependencies. The extension logic is about 1,200 lines, backed by 71 unit tests and a real-browser test suite.
+
+**Tech:** JavaScript, Chrome Extension APIs (service worker, content scripts, storage, alarms, idle, notifications, permissions), Node's built-in test runner, Playwright, GitHub Actions, Python (release packaging).
+
+### The hard parts
+
+**The background script can die at any moment.** Chrome shuts down extension service workers whenever it wants. So all state lives in storage under one key, and every change is saved in a single write. If the worker restarts halfway through the day, it reloads and carries on. Finishing a challenge and getting the break are saved together, so a crash can't leave you with one and not the other.
+
+**Lots of browser events fire at once.** Switching tabs or windows can trigger several events in the same instant. Every event and message goes through one queue, so only one thing changes state at a time. For example, clicking submit twice on the last question can't give you two breaks.
+
+**Counting time accurately.** Only the selected tab in the focused window counts. The page sends a small heartbeat about once a second while it's visible. If the heartbeats stop (laptop asleep, Chrome frozen), that gap isn't charged to you.
+
+**A day that starts at 6 AM.** Days run 6 AM to 6 AM in your local time zone, including across daylight saving changes. If Chrome was closed at 6 AM, the reset happens the next time it starts. Breaks are stored as real clock deadlines, so restarting Chrome doesn't reset or extend them.
+
+**Keeping permissions small.** ScrollGuard only asks for access to a site when you add it. The script that runs on websites can't read your settings or start challenges. Only the extension's own pages can do that.
+
+**Upgrading without losing data.** Version 4 replaced an older Instagram/TikTok-only version. It imports the old limits and math settings automatically.
+
+### Testing
+
+- **Unit tests** cover time tracking, the 6 AM reset, daylight saving, challenge retries, double submits, recovering from a crashed worker, settings lock, and upgrades.
+- **Real-browser tests** load the actual extension in Chromium with Playwright. They add sites, use up a limit, check blocking and notifications, solve challenges, restart the browser, and fast-forward the clock.
+- **CI** runs the tests on Linux, macOS, and Windows for every push. Tagging a version builds the Windows and Mac ZIPs, tests them in a real browser, and publishes a GitHub release.
+
+### Code map
+
+| File | What it does |
+| --- | --- |
+| `lib/engine.js` | Core logic with no browser code: time accounting, 6 AM days, challenges, breaks |
+| `lib/config.js` | Defaults, difficulty levels, input checks |
+| `lib/storage.js` | Saving state and upgrading from older versions |
+| `background/service-worker.js` | Handles browser events, tracking, blocking, permissions |
+| `content/detector.js` | Runs on tracked sites and sends the once-a-second heartbeat |
 | `lib/app.js`, `lib/ui.css` | Popup, overview, website manager, settings |
-| `challenge/` | Persistent question-by-question challenge screen |
+| `challenge/` | The math challenge page |
 
-State uses a single `scrollguardV4` storage key. Completing a challenge and awarding its break commit in the same write. All service-worker mutations are serialized; submitting the same final answer twice cannot award two breaks. Content scripts cannot read private storage or invoke settings/challenge commands.
+### Run it yourself
 
-## Verification
-
-Requires Node.js 20+ for development checks only:
+Needs Node.js 20+ (only for development).
 
 ```sh
 npm test
 npm run check
 ```
 
-The dependency-free tests exercise accounting, domain matching, reset boundaries, challenge retries, duplicate submissions, tracking/focus, recovery after heartbeat and startup failures, settings protection, and migration. GitHub Actions runs them on Linux, macOS, and Windows on pushes and pull requests.
-
-An optional real-browser smoke test is in `scripts/browser-smoke.js`. It needs Playwright and its Chromium browser. It uses `.test-profile/` (a disposable test profile), intercepts the test website locally, and writes screenshots to `test-results/`. It never uses your normal Chrome profile. Set `PLAYWRIGHT_MODULE` to a bundled Playwright path if it is not installed locally; set `PLAYWRIGHT_BROWSERS_PATH` if using a custom browser cache.
+Real-browser tests (uses a throwaway Chrome profile, never your own):
 
 ```sh
 npm install --no-save --package-lock=false playwright
@@ -97,9 +125,7 @@ npx playwright install chromium
 node scripts/browser-smoke.js
 ```
 
-Set `HEADED=1` to show the test browser window; keep it focused while the active-use timer runs. The smoke test covers adding YouTube through the native optional-permission API, Shorts-only tracking and blocking across same-tab navigation, active-use limits, one rejected heartbeat and recovery, native notification API calls, math challenges and saved progress, elapsed-clock break expiry, blocked revisits, same-tab Instagram returns without losing focus (also after restart), a browser restart, and a simulated four-hour same-day gap. YouTube access is pre-approved through Chromium's extension-management API only in the disposable test profile; the form's actual permission request and manifest validation remain in use. The time jump changes only the test worker's clock; it does not change your Mac/PC clock or represent a four-hour endurance run. Notifications are checked at the browser API level; operating-system banner delivery depends on system notification settings.
-
-`python scripts/package-release.py` builds and verifies separate Windows and macOS ZIPs in `dist/`, including `challenge/`, an OS-specific `INSTALL.md`, and SHA-256 checksums. Python 3 is needed only for packaging. Tagging `v<manifest version>` runs the cross-platform checks and real packaged-extension browser tests before publishing both downloads in one GitHub release.
+Build the release ZIPs with `python scripts/package-release.py`.
 
 ## License
 
